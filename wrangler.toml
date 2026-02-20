@@ -1,0 +1,22 @@
+name = "socialcal"
+main = "src/worker.ts"
+compatibility_date = "2026-02-20"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+RL_CAPACITY = "60"
+RL_WINDOW_SEC = "3600"
+RL_BURST = "10"
+ICS_TTL_SEC = "60"
+ICS_MAX_AGE_SEC = "60"
+ICS_SWR_SEC = "300"
+TS_TTL_SEC = "15"
+
+[durable_objects]
+bindings = [
+  { name = "RATE_LIMITER", class_name = "RateLimiter" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimiter"]
