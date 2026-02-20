@@ -19,4 +19,4 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RateLimiter"]
+new_sqlite_classes = ["RateLimiter"]
