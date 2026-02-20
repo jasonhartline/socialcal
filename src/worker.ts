@@ -1,5 +1,6 @@
 // src/worker.ts
-import chrono from "chrono-node";
+
+import * as chrono from "chrono-node";
 import ical, { ICalCalendar } from "ical-generator";
 import { DateTime } from "luxon";
 
