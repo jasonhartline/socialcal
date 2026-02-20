@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SocialCalendar User Manual (v1)</title>
+  <style>
+    :root { --fg:#111; --muted:#555; --bg:#fff; --codebg:#f6f8fa; --border:#e5e7eb; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+           color: var(--fg); background: var(--bg); margin: 0; }
+    main { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.45; }
+    h1 { font-size: 2rem; margin: 0 0 8px; }
+    h2 { font-size: 1.35rem; margin: 28px 0 10px; }
+    h3 { font-size: 1.1rem; margin: 18px 0 8px; }
+    p, li { font-size: 1rem; }
+    .muted { color: var(--muted); }
+    .callout {
+      border: 1px solid var(--border);
+      border-left: 4px solid #3b82f6;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #fbfdff;
+      margin: 14px 0;
+    }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    pre {
+      background: var(--codebg);
+      padding: 12px 14px;
+      border-radius: 10px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      margin: 10px 0 14px;
+    }
+    code { background: #f2f4f7; padding: 0.1em 0.3em; border-radius: 6px; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    table { border-collapse: collapse; width: 100%; margin: 10px 0 14px; }
+    th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+    th { background: #f9fafb; }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 22px 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SocialCalendar</h1>
+    <p class="muted">User Manual (v1)</p>
+
+    <p>Turn Bluesky posts into a live calendar.</p>
+
+    <div class="callout">
+      <strong>Calendar URL</strong><br />
+      Add this URL to your calendar app:
+      <pre><code>https://socialcalendar.org/ics?handle=&lt;your-handle&gt;</code></pre>
+      <span class="muted">Your calendar app will refresh automatically.</span>
+    </div>
+
+    <h2>How It Works</h2>
+    <p>SocialCalendar scans:</p>
+    <ul>
+      <li>Posts you write</li>
+      <li>Posts you repost</li>
+      <li>Posts you reply to <span class="muted">(see “Using Replies”)</span></li>
+    </ul>
+    <p>It looks for the hashtag:</p>
+    <pre><code>#socialcal</code></pre>
+
+    <h2>Creating an Event (Simple Case)</h2>
+    <p>Write a post in this format:</p>
+    <pre><code>[date and time with timezone] Title of Event
+
+Details about the event #socialcal</code></pre>
+
+    <p>Example:</p>
+    <pre><code>[March 22 7pm CT] Drinks at Maria’s
+
+Back room. Bring friends. #socialcal</code></pre>
+
+    <p>This becomes:</p>
+    <ul>
+      <li><strong>Title</strong>: Drinks at Maria’s</li>
+      <li><strong>Time</strong>: March 22, 7pm Central Time</li>
+      <li><strong>Description</strong>: Back room. Bring friends.</li>
+    </ul>
+
+    <h2>Timezone Rules (Required)</h2>
+    <p>The bracket must include a timezone as the <strong>last token</strong>. If the timezone is missing or invalid, the post is ignored.</p>
+
+    <h3>Allowed timezone formats</h3>
+
+    <h4>Short US forms</h4>
+    <p>Use one of: <code>ET</code>, <code>CT</code>, <code>MT</code>, <code>PT</code></p>
+    <pre><code>[tomorrow 7pm CT]</code></pre>
+
+    <h4>Full timezone names (IANA)</h4>
+    <pre><code>Europe/Paris
+America/Chicago
+Asia/Tokyo</code></pre>
+    <pre><code>[March 22 19:00 Europe/Paris]</code></pre>
+
+    <h4>ISO offsets</h4>
+    <pre><code>-05:00
++01:00
+Z</code></pre>
+    <pre><code>[2026-03-22T19:00-05:00]</code></pre>
+
+    <h3>Not allowed</h3>
+    <ul>
+      <li>Abbreviations like <code>CST</code>, <code>PST</code>, <code>IST</code></li>
+      <li>City names like <code>Chicago</code></li>
+      <li>Missing timezone</li>
+    </ul>
+
+    <h2>Relative Dates</h2>
+    <p>Relative times are supported and interpreted relative to when the post was created.</p>
+    <pre><code>[tomorrow 7pm CT]
+[next Friday 6:30pm ET]
+[in 2 weeks 5pm PT]</code></pre>
+
+    <h2>Using Replies to Add Events</h2>
+    <p>Replies let you turn someone else’s post into an event. <strong>Replies are only considered if your reply contains <code>#socialcal</code></strong>.</p>
+
+    <h3>1) Parent post already contains a full event</h3>
+    <p>If you reply <em>with</em> <code>#socialcal</code> to a post that already has the correct format and includes <code>#socialcal</code>, that parent post becomes an event.</p>
+
+    <p><strong>Parent:</strong></p>
+    <pre><code>[March 22 7pm CT] Seminar
+
+Room 240. #socialcal</code></pre>
+
+    <p><strong>Your reply:</strong></p>
+    <pre><code>Looking forward! #socialcal</code></pre>
+
+    <p><strong>Result:</strong> The parent post becomes an event.</p>
+
+    <h3>2) Reply supplies the event header</h3>
+    <p>If the parent post does not contain event formatting, your reply can provide it using a one-line header:</p>
+    <pre><code>[date and time with timezone] Title of Event #socialcal</code></pre>
+
+    <p><strong>Parent (details):</strong></p>
+    <pre><code>Dinner at Maria’s. Back room.</code></pre>
+
+    <p><strong>Your reply (header):</strong></p>
+    <pre><code>[March 22 7pm CT] Dinner #socialcal</code></pre>
+
+    <p><strong>Result:</strong></p>
+    <ul>
+      <li>Date/time/title come from your reply.</li>
+      <li>Event details/description come from the parent post.</li>
+    </ul>
+
+    <h3>3) Hashtag-only replies</h3>
+    <p>If a reply chain already established either:</p>
+    <ul>
+      <li>a full event post, or</li>
+      <li>a header reply</li>
+    </ul>
+    <p>then a later reply that contains only:</p>
+    <pre><code>#socialcal</code></pre>
+    <p>will combine the pieces and create the event if possible. This allows simple “add this” interactions without repeating the header.</p>
+
+    <h2>Reposts</h2>
+    <p>If you repost a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
+
+    <h2>What Gets Ignored</h2>
+    <p>Posts are skipped if:</p>
+    <ul>
+      <li><code>#socialcal</code> is missing (except when a reply with <code>#socialcal</code> triggers inclusion via the reply rules)</li>
+      <li>Date/time is missing</li>
+      <li>Timezone is missing or invalid</li>
+      <li>The required formatting is malformed</li>
+      <li>The referenced parent post is unavailable</li>
+    </ul>
+
+    <h2>Best Practices</h2>
+    <p>Keep formatting clean.</p>
+
+    <p><strong>Good:</strong></p>
+    <pre><code>[March 22 7pm CT] Dinner
+
+Back room at Maria’s. #socialcal</code></pre>
+
+    <p><strong>Avoid:</strong></p>
+    <pre><code>Dinner March 22 at 7 CT #socialcal</code></pre>
+
+    <p class="muted">Remember: the timezone must be the last token inside the brackets.</p>
+
+    <h2>Deduplication</h2>
+    <p>If multiple posts/replies reference the same event, it will appear only once.</p>
+
+    <hr />
+
+    <h2>Adding to Your Calendar</h2>
+    <p>Use:</p>
+    <pre><code>https://socialcalendar.org/ics?handle=&lt;your-handle&gt;</code></pre>
+
+    <p>In common calendar apps:</p>
+    <ul>
+      <li><strong>Google Calendar</strong> → “From URL”</li>
+      <li><strong>Apple Calendar</strong> → “New Calendar Subscription”</li>
+      <li><strong>Outlook</strong> → “Subscribe from Web”</li>
+    </ul>
+
+    <p class="muted">That’s it — post events with <code>#socialcal</code>, and your calendar stays up to date.</p>
+  </main>
+</body>
+</html>
