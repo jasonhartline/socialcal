@@ -258,6 +258,60 @@ function utcMidnightDate(y: number, m: number, d: number): Date {
   return new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
 }
 
+// code to pull out urls from facits and place them in text.
+type Facet = {
+  index: { byteStart: number; byteEnd: number };
+  features: Array<{ $type: string; uri?: string }>;
+};
+
+function replaceFacetLinks(text: string, facets: Facet[] | undefined): string {
+  if (!facets || facets.length === 0) return text;
+
+  const enc = new TextEncoder();
+  const dec = new TextDecoder("utf-8");
+
+  const bytes = enc.encode(text);
+
+  // collect link replacements
+  const reps: Array<{ s: number; e: number; uri: string }> = [];
+
+  for (const f of facets) {
+    const s = f?.index?.byteStart;
+    const e = f?.index?.byteEnd;
+    if (!Number.isFinite(s) || !Number.isFinite(e) || s < 0 || e > bytes.length || e <= s) continue;
+
+    // facet can have multiple features; we want the link one
+    const link = f.features?.find((x) => x?.$type === "app.bsky.richtext.facet#link" && typeof x?.uri === "string");
+    if (!link?.uri) continue;
+
+    reps.push({ s, e, uri: link.uri });
+  }
+
+  if (reps.length === 0) return text;
+
+  // Replace from right to left so byte offsets remain valid
+  reps.sort((a, b) => b.s - a.s);
+
+  let out = bytes;
+  for (const r of reps) {
+    // optional: only replace if the displayed text isn't already the full URL
+    const displayed = dec.decode(out.slice(r.s, r.e)).trim();
+    if (displayed === r.uri) continue;
+
+    const before = out.slice(0, r.s);
+    const after = out.slice(r.e);
+    const mid = enc.encode(r.uri);
+
+    const merged = new Uint8Array(before.length + mid.length + after.length);
+    merged.set(before, 0);
+    merged.set(mid, before.length);
+    merged.set(after, before.length + mid.length);
+    out = merged;
+  }
+
+  return dec.decode(out);
+}
+
 
 
 // =====================
@@ -284,9 +338,13 @@ type PostView = {
   indexedAt?: string;
 };
 
+
 function getPostText(p: PostView): string {
-  return normalizeText(String(p?.record?.text ?? ""));
+  const raw = normalizeText(String(p?.record?.text ?? ""));
+  const facets = p?.record?.facets as Facet[] | undefined;
+  return replaceFacetLinks(raw, facets);
 }
+
 
 function getPostCreatedAt(p: PostView): string {
   return String(p?.record?.createdAt ?? p?.indexedAt ?? new Date().toISOString());
