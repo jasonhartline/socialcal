@@ -421,7 +421,7 @@ function candidatePermalink(e: CandidateEvent): string | null {
 function buildEventDescription(details: string, permalink: string | null): string {
   const d = (details ?? "").trim();
   const footer = permalink
-    ? `Source: ${permalink} · via SocialCal <https://socialcal.org/>`
+    ? `Source: <${permalink}> · via SocialCal <https://socialcal.org/>`
     : `via SocialCal <https://socialcal.org/>`;
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
