@@ -5,7 +5,7 @@ import ical, { ICalCalendar } from "ical-generator";
 import { DateTime } from "luxon";
 
 const BSKY_PUBLIC = "https://public.api.bsky.app/xrpc";
-const FOOTER_LINE = "Automatic event from BlueSky via SocialCal: https://socialcal.org/";
+
 
 // =====================
 // Env + config knobs
@@ -393,6 +393,70 @@ function eventKey(e: CandidateEvent): string {
   return e.kind === "full" ? `full:${e.sourceUri}` : `combo:${e.headerUri}->${e.detailsUri}`;
 }
 
+type DerivedEvent = {
+  uid: string;
+  title: string;
+  when: WhenSpec;
+  permalink: string | null;
+  description: string; // FINAL description used in ICS and troubleshoot
+};
+
+type DerivedSkip = {
+  sourceUri: string;
+  reason: string;
+};
+
+function candidateUid(e: CandidateEvent): string {
+  return e.kind === "full"
+    ? `${e.sourceUri}#${e.whenBracket}`
+    : `${e.headerUri}->${e.detailsUri}#${e.whenBracket}`;
+}
+
+function candidatePermalink(e: CandidateEvent): string | null {
+  return e.kind === "full"
+    ? toBskyPermalink(e.sourceHandle, e.sourceUri)
+    : toBskyPermalink(e.sourceHandle, e.detailsUri);
+}
+
+function buildEventDescription(details: string, permalink: string | null): string {
+  const d = (details ?? "").trim();
+  const footer = permalink
+    ? `Source: ${permalink} · via SocialCal <https://socialcal.org/>`
+    : `via SocialCal <https://socialcal.org/>`;
+  return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
+}
+
+function deriveFromCandidates(events: CandidateEvent[], defaultDurationMin: number): { derived: DerivedEvent[]; skipped: DerivedSkip[] } {
+  const derived: DerivedEvent[] = [];
+  const skipped: DerivedSkip[] = [];
+
+  for (const e of events) {
+    const when = parseWhenSpec(e.whenBracket, e.referenceISO, defaultDurationMin);
+    if (!when) {
+      skipped.push({
+        sourceUri: e.kind === "full" ? e.sourceUri : e.headerUri,
+        reason: "Could not parse date/time (timed events require a supported timezone).",
+      });
+      continue;
+    }
+
+    const permalink = candidatePermalink(e);
+    const uid = candidateUid(e);
+    const description = buildEventDescription(e.details, permalink);
+
+    derived.push({
+      uid,
+      title: e.title,
+      when,
+      permalink,
+      description,
+    });
+  }
+
+  return { derived, skipped };
+}
+
+
 function buildEventFromFullPost(p: PostView): CandidateEvent | null {
   const full = parseFullEventFormat(getPostText(p));
   if (!full) return null;
@@ -560,53 +624,34 @@ async function collectCandidates(handle: string): Promise<CandidateEvent[]> {
 // =====================
 // Build ICS
 // =====================
-function buildCalendar(handle: string, events: CandidateEvent[], defaultDurationMin: number): string {
+function buildCalendar(handle: string, events: DerivedEvent[]): string {
   const cal: ICalCalendar = ical({
     name: `SocialCalendar: ${handle}`,
     prodId: { company: "socialcalendar.org", product: "socialcalendar", language: "EN" },
   });
 
   for (const e of events) {
-      const spec = parseWhenSpec(e.whenBracket, e.referenceISO, defaultDurationMin);
-    if (!spec) continue;
-
-    const url =
-      e.kind === "full"
-        ? toBskyPermalink(e.sourceHandle, e.sourceUri)
-        : toBskyPermalink(e.sourceHandle, e.detailsUri);
-
-    // Always append the footer line
-    const descParts = [e.details.trim()];
-    if (url) descParts.push(url);
-    descParts.push(FOOTER_LINE);
-    const description = descParts.filter(Boolean).join("\n\n");
-
-    const uid =
-      e.kind === "full"
-        ? `${e.sourceUri}#${e.whenBracket}`
-        : `${e.headerUri}->${e.detailsUri}#${e.whenBracket}`;
-
-    if (spec.kind === "allday") {
-      const start = utcMidnightDate(spec.startDate.y, spec.startDate.m, spec.startDate.d);
-      const end = utcMidnightDate(spec.endDateExclusive.y, spec.endDateExclusive.m, spec.endDateExclusive.d);
+    if (e.when.kind === "allday") {
+      const start = utcMidnightDate(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d);
+      const end = utcMidnightDate(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d);
 
       cal.createEvent({
-        id: uid,
+        id: e.uid,
         allDay: true,
         start,
         end,
         summary: e.title,
-        description,
-        url: url ?? undefined,
+        description: e.description,
+        url: e.permalink ?? undefined,
       });
     } else {
       cal.createEvent({
-        id: uid,
-        start: spec.start.toJSDate(),
-        end: spec.end.toJSDate(),
+        id: e.uid,
+        start: e.when.start.toJSDate(),
+        end: e.when.end.toJSDate(),
         summary: e.title,
-        description,
-        url: url ?? undefined,
+        description: e.description,
+        url: e.permalink ?? undefined,
       });
     }
   }
@@ -621,114 +666,24 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-async function troubleshoot(handle: string, defaultDurationMin = 60): Promise<string> {
-  type Card =
-    | { kind: "event"; title: string; when: string; start: string; end: string; allDay: boolean; description: string; source: string }
-    | { kind: "skip"; source: string; reason: string };
-
-  const cards: Card[] = [];
-
-  let cursor: string | undefined = undefined;
-  let considered = 0;
-
-  const PAGES = 2; // cheap
-  for (let page = 0; page < PAGES; page++) {
-    const data = await bskyGet("app.bsky.feed.getAuthorFeed", {
-      actor: handle,
-      filter: "posts_with_replies",
-      limit: 100,
-      cursor,
-    });
-
-    const feed = Array.isArray(data?.feed) ? data.feed : [];
-    cursor = data?.cursor;
-
-    for (const item of feed) {
-      const post: PostView = item?.post;
-      if (!post?.uri || !post?.record) continue;
-
-      const txt = getPostText(post);
-      if (!hasSocialcal(txt)) continue; // show only likely-intended items
-
-      const created = getPostCreatedAt(post);
-
-      // Collect candidate events the same way the calendar does
-      const derived: CandidateEvent[] = [];
-
-      const full = buildEventFromFullPost(post);
-      if (full) derived.push(full);
-
-      const isReply = !!post?.record?.reply?.parent?.uri;
-      if (isReply && hasSocialcal(txt)) {
-        const more = await deriveReplyTriggeredEvents(post);
-        derived.push(...more);
-      }
-
-      if (derived.length === 0) {
-        // Give a best reason
-        const hdr = parseReplyHeaderFormat(txt);
-        if (hdr) {
-          const spec = parseWhenSpec(hdr.when, created, defaultDurationMin);
-          const reason = spec ? "Header format belongs in a reply (or use full format in a post)." : "Header found but timezone missing/invalid (timed events require TZ).";
-          cards.push({ kind: "skip", source: post.uri, reason });
-        } else {
-          cards.push({ kind: "skip", source: post.uri, reason: "Contains #socialcal but does not match required format." });
-        }
-      } else {
-        for (const e of derived) {
-          const spec = parseWhenSpec(e.whenBracket, e.referenceISO, defaultDurationMin);
-          if (!spec) {
-            cards.push({ kind: "skip", source: e.kind === "full" ? e.sourceUri : e.headerUri, reason: "Could not parse date/time (timed events require a supported timezone)." });
-            continue;
-          }
-
-          const url =
-            e.kind === "full"
-              ? toBskyPermalink(e.sourceHandle, e.sourceUri)
-              : toBskyPermalink(e.sourceHandle, e.detailsUri);
-
-          const descParts = [e.details.trim()];
-          if (url) descParts.push(url);
-          descParts.push(FOOTER_LINE);
-          const description = descParts.filter(Boolean).join("\n\n");
-
-          if (spec.kind === "allday") {
-            const start = DateTime.utc(spec.startDate.y, spec.startDate.m, spec.startDate.d).toISODate();
-            const endEx = DateTime.utc(spec.endDateExclusive.y, spec.endDateExclusive.m, spec.endDateExclusive.d).toISODate();
-            cards.push({
-              kind: "event",
-              title: e.title,
-              when: e.whenBracket,
-              start: start ?? "",
-              end: endEx ?? "",
-              allDay: true,
-              description,
-              source: e.kind === "full" ? e.sourceUri : `${e.headerUri} + ${e.detailsUri}`,
-            });
-          } else {
-            cards.push({
-              kind: "event",
-              title: e.title,
-              when: e.whenBracket,
-              start: spec.start.toISO(),
-              end: spec.end.toISO(),
-              allDay: false,
-              description,
-              source: e.kind === "full" ? e.sourceUri : `${e.headerUri} + ${e.detailsUri}`,
-            });
-          }
-        }
-      }
-
-      considered++;
-      if (considered >= 40) break;
+function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: DerivedSkip[]): string {
+  const eventCards = events.map((e) => {
+    if (e.when.kind === "allday") {
+      const startISO =
+        DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toISO() ?? "";
+      const endISO =
+        DateTime.utc(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d).toISO() ?? "";
+      return { title: e.title, allDay: true, start: startISO, end: endISO, description: e.description };
+    } else {
+      return {
+        title: e.title,
+        allDay: false,
+        start: e.when.start.toISO() ?? "",
+        end: e.when.end.toISO() ?? "",
+        description: e.description,
+      };
     }
-
-    if (considered >= 40 || !cursor) break;
-  }
-
-  const eventCards = cards.filter((c) => c.kind === "event") as Extract<Card, { kind: "event" }>[];
-  const skipCards = cards.filter((c) => c.kind === "skip") as Extract<Card, { kind: "skip" }>[];;
+  });
 
   return `<!doctype html>
 <html>
@@ -744,7 +699,6 @@ async function troubleshoot(handle: string, defaultDurationMin = 60): Promise<st
   .row { display: flex; gap: 12px; flex-wrap: wrap; }
   .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #f1f1f1; }
   pre { white-space: pre-wrap; word-break: break-word; background: #f7f7f7; padding: 10px; border-radius: 8px; }
-  a { color: inherit; }
 </style>
 </head>
 <body>
@@ -754,30 +708,29 @@ async function troubleshoot(handle: string, defaultDurationMin = 60): Promise<st
   <h2>Events that will appear in the calendar</h2>
   <div class="grid">
     ${eventCards.length === 0 ? `<div class="muted">No events parsed from recent #socialcal items.</div>` : eventCards.map(e => `
-  <div class="card">
-    <div class="row" style="justify-content: space-between; align-items: baseline;">
-      <div><b>${esc(e.title)}</b></div>
-      <div class="pill">${e.allDay ? "all-day" : "timed"}</div>
-    </div>
+      <div class="card">
+        <div class="row" style="justify-content: space-between; align-items: baseline;">
+          <div><b>${esc(e.title)}</b></div>
+          <div class="pill">${e.allDay ? "all-day" : "timed"}</div>
+        </div>
 
-    <div class="muted time"
-         data-allday="${e.allDay ? "true" : "false"}"
-         data-start="${esc(e.start)}"
-         data-end="${esc(e.end)}">
-      <!-- filled by JS -->
-    </div>
+        <div class="muted time"
+             data-allday="${e.allDay ? "true" : "false"}"
+             data-start="${esc(e.start)}"
+             data-end="${esc(e.end)}">
+        </div>
 
-    <div style="margin-top:10px;"><b>Description:</b></div>
-    <pre>${esc(e.description)}</pre>
-  </div>
-`).join("")}
+        <div style="margin-top:10px;"><b>Description:</b></div>
+        <pre>${esc(e.description)}</pre>
+      </div>
+    `).join("")}
   </div>
 
   <h2>Skipped items</h2>
   <div class="grid">
-    ${skipCards.length === 0 ? `<div class="muted">None.</div>` : skipCards.map(s => `
+    ${skipped.length === 0 ? `<div class="muted">None.</div>` : skipped.map(s => `
       <div class="card">
-        <div class="muted">Source: <code>${esc(s.source)}</code></div>
+        <div class="muted"><code>${esc(s.sourceUri)}</code></div>
         <div><b>Reason:</b> ${esc(s.reason)}</div>
       </div>
     `).join("")}
@@ -786,7 +739,7 @@ async function troubleshoot(handle: string, defaultDurationMin = 60): Promise<st
   <div class="muted" style="margin-top:24px;">
     Reminder: timed events require TZ (ET/CT/MT/PT, IANA like America/Chicago, Z, or ±HH:MM). Date-only events are all-day and TZ is optional.
   </div>
-</body>
+
 <script>
 (function () {
   const fmtDate = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" });
@@ -806,10 +759,8 @@ async function troubleshoot(handle: string, defaultDurationMin = 60): Promise<st
     }
 
     if (allDay) {
-      // end is exclusive; display inclusive end date
       const endInclusive = new Date(end.getTime());
       endInclusive.setDate(endInclusive.getDate() - 1);
-
       el.textContent = sameDay(start, endInclusive)
         ? fmtDate.format(start)
         : fmtDate.format(start) + " – " + fmtDate.format(endInclusive);
@@ -819,8 +770,12 @@ async function troubleshoot(handle: string, defaultDurationMin = 60): Promise<st
   }
 })();
 </script>
+
+</body>
 </html>`;
 }
+
+
 
 // =====================
 // DO-based caching + rate limit
@@ -896,7 +851,11 @@ export default {
       }
 
       try {
-        const report = await troubleshoot(handle, defaultDurationMin);
+
+      	const candidates = await collectCandidates(handle);
+        const { derived, skipped } = deriveFromCandidates(candidates, defaultDurationMin);
+        const report = troubleshootHTML(handle, derived, skipped);
+	
         await cachePut(env, handle, "ts", report, "text/html; charset=utf-8", tsTtl);
         return new Response(report, {
           headers: {
@@ -922,23 +881,24 @@ export default {
       });
     }
 
-    let candidates: CandidateEvent[];
     try {
-      candidates = await collectCandidates(handle);
+        const candidates = await collectCandidates(handle);
+	const { derived } = deriveFromCandidates(candidates, defaultDurationMin);
+	const ics = buildCalendar(handle, derived);
+
+        await cachePut(env, handle, "ics", ics, "text/calendar; charset=utf-8", icsTtl);
+
+        return new Response(ics, {
+          headers: {
+            "Content-Type": "text/calendar; charset=utf-8",
+            "Cache-Control": `public, max-age=${icsMaxAge}, stale-while-revalidate=${icsSwr}`,
+         },
+        });
+
     } catch (err: any) {
       return new Response(`Error fetching from Bluesky: ${err?.message ?? String(err)}`, { status: 502 });
     }
-
-    const ics = buildCalendar(handle, candidates, defaultDurationMin);
-    await cachePut(env, handle, "ics", ics, "text/calendar; charset=utf-8", icsTtl);
-
-    return new Response(ics, {
-      headers: {
-        "Content-Type": "text/calendar; charset=utf-8",
-        "Cache-Control": `public, max-age=${icsMaxAge}, stale-while-revalidate=${icsSwr}`,
-      },
-    });
-  },
+  }
 };
 
 // =====================
