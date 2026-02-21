@@ -103,39 +103,50 @@ Back room. Bring friends. #socialcal</code></pre>
       <li><strong>Description</strong>: Back room. Bring friends.</li>
     </ul>
 
-    <h2>Timezone Rules (Required)</h2>
-    <p>The bracket must include a timezone as the <strong>last token</strong>. If the timezone is missing or invalid, the post is ignored.</p>
+    <h2>RSVPing to an Event Post (Simple Case)</h2>
 
-    <h3>Allowed timezone formats</h3>
+    <p>If you <i>repost</i> a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
 
-    <h4>Short US forms</h4>
-    <p>Use one of: <code>ET</code>, <code>CT</code>, <code>MT</code>, <code>PT</code></p>
-    <pre><code>[tomorrow 7pm CT]</code></pre>
+    
+<h2>Time & Date Format</h2>
 
-    <h4>Full timezone names (IANA)</h4>
-    <pre><code>Europe/Paris
-America/Chicago
-Asia/Tokyo</code></pre>
-    <pre><code>[March 22 19:00 Europe/Paris]</code></pre>
+<p>The first line of your post must start with a bracketed date/time:</p>
 
-    <h4>ISO offsets</h4>
-    <pre><code>-05:00
-+01:00
-Z</code></pre>
-    <pre><code>[2026-03-22T19:00-05:00]</code></pre>
+<pre>[March 5 9am CT] Weekly Coffee
+#socialcal</pre>
 
-    <h3>Not allowed</h3>
-    <ul>
-      <li>Abbreviations like <code>CST</code>, <code>PST</code>, <code>IST</code></li>
-      <li>City names like <code>Chicago</code></li>
-      <li>Missing timezone</li>
-    </ul>
+<h3>Timed Events (timezone required)</h3>
 
-    <h2>Relative Dates</h2>
-    <p>Relative times are supported and interpreted relative to when the post was created.</p>
-    <pre><code>[tomorrow 7pm CT]
-[next Friday 6:30pm ET]
-[in 2 weeks 5pm PT]</code></pre>
+<ul>
+  <li><code>[March 5 9am CT]</code> → 60 minute event (default duration)</li>
+  <li><code>[March 5 9am-11am CT]</code> → explicit time range</li>
+  <li><code>[tomorrow 6pm ET]</code> → relative dates supported</li>
+</ul>
+
+<p>
+For timed events, a timezone is required. Supported formats:
+<code>ET</code>, <code>CT</code>, <code>MT</code>, <code>PT</code>,
+IANA zones like <code>America/Chicago</code>,
+<code>Z</code>, or <code>±HH:MM</code>.
+</p>
+
+<h3>All-Day Events (timezone optional)</h3>
+
+<ul>
+  <li><code>[March 5]</code> → single-day all-day event</li>
+  <li><code>[March 5–10]</code> → multi-day event (inclusive)</li>
+  <li><code>[March 5-10]</code> → hyphen also supported</li>
+</ul>
+
+<p>
+Date-only events become all-day calendar entries.  
+Date ranges are interpreted as inclusive (March 5–10 includes both March 5 and March 10).
+</p>
+
+    <h2>Using Reposts to Add Events</h2>
+
+    <p>If you repost a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
+
 
     <h2>Using Replies to Add Events</h2>
     <p>Replies let you turn someone else’s post into an event. <strong>Replies are only considered if your reply contains <code>#socialcal</code></strong>.</p>
@@ -179,8 +190,6 @@ Room 240. #socialcal</code></pre>
     <pre><code>#socialcal</code></pre>
     <p>will combine the pieces and create the event if possible. This allows simple “add this” interactions without repeating the header.</p>
 
-    <h2>Reposts</h2>
-    <p>If you repost a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
 
     <h2>What Gets Ignored</h2>
     <p>Posts are skipped if:</p>

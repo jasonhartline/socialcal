@@ -5,6 +5,7 @@ import ical, { ICalCalendar } from "ical-generator";
 import { DateTime } from "luxon";
 
 const BSKY_PUBLIC = "https://public.api.bsky.app/xrpc";
+const FOOTER_LINE = "Automatic event from BlueSky via SocialCal: https://socialcal.org/";
 
 // =====================
 // Env + config knobs
@@ -149,28 +150,115 @@ function applyZone(dt: DateTime, zone: string): DateTime | null {
   return z.isValid ? z : null;
 }
 
-function parseWhen(bracket: string, referenceISO: string): DateTime | null {
-  const tz = parseTimezoneToken(bracket);
-  if (!tz) return null;
+type WhenSpec =
+  | { kind: "timed"; start: DateTime; end: DateTime }
+  | { kind: "allday"; startDate: { y: number; m: number; d: number }; endDateExclusive: { y: number; m: number; d: number } };
+
+// helper: add days to a Y-M-D triple (in UTC)
+function addDaysUTC(y: number, m: number, d: number, days: number): { y: number; m: number; d: number } {
+  const dt = DateTime.utc(y, m, d).plus({ days });
+  return { y: dt.year, m: dt.month, d: dt.day };
+}
+
+// Parse bracket into either:
+// - timed event with start/end DateTime (timezone required)
+// - all-day single/multi-day with DTSTART/DTEND (timezone optional / ignored)
+function parseWhenSpec(bracket: string, referenceISO: string, defaultDurationMin: number): WhenSpec | null {
+  const raw = bracket.trim();
+
+  // If the last token looks like a timezone, we’ll strip it; otherwise TZ is absent.
+  const tokens = raw.split(/\s+/);
+  const last = tokens[tokens.length - 1] ?? "";
+  const tzParsed = parseTimezoneToken(raw); // uses existing logic: requires TZ token at end
+  const hasExplicitTZ = tzParsed !== null;
+
+  // For parsing the human time expression, we want just the “expr” part when TZ exists.
+  const expr = hasExplicitTZ ? tzParsed!.expr : raw;
 
   const reference = new Date(referenceISO);
-  const results = chrono.parse(tz.expr, reference, { forwardDate: true });
+  const results = chrono.parse(expr, reference, { forwardDate: true });
   if (!results?.length) return null;
 
-  const start = results[0].start;
-  const year = start.get("year");
-  const month = start.get("month");
-  const day = start.get("day");
-  const hour = start.isCertain("hour") ? start.get("hour") : 0;
-  const minute = start.isCertain("minute") ? start.get("minute") : 0;
-  const second = start.isCertain("second") ? start.get("second") : 0;
+  const r = results[0];
+  const s = r.start;
 
-  const base = DateTime.fromObject({ year, month, day, hour, minute, second }, { zone: "UTC" });
-  if (!base.isValid) return null;
+  const startHasHour = s.isCertain("hour") || s.isCertain("minute");
 
-  const zoned = applyZone(base, tz.zone);
-  return zoned && zoned.isValid ? zoned : null;
+  // ---- ALL-DAY: no time present
+  if (!startHasHour) {
+    const sy = s.get("year"), sm = s.get("month"), sd = s.get("day");
+
+    // Multi-day all-day if chrono provided an end date
+    if (r.end) {
+      const e = r.end;
+      const ey = e.get("year"), em = e.get("month"), ed = e.get("day");
+
+      // User intent is inclusive, ICS DTEND is exclusive => add 1 day to end date
+      const endExclusive = addDaysUTC(ey, em, ed, 1);
+      return {
+        kind: "allday",
+        startDate: { y: sy, m: sm, d: sd },
+        endDateExclusive: endExclusive,
+      };
+    }
+
+    // Single-day all-day => DTEND is next day
+    const endExclusive = addDaysUTC(sy, sm, sd, 1);
+    return {
+      kind: "allday",
+      startDate: { y: sy, m: sm, d: sd },
+      endDateExclusive: endExclusive,
+    };
+  }
+
+  // ---- TIMED: time present => TZ required
+  if (!hasExplicitTZ) return null;
+
+  // Build start DateTime (local clock time) then apply tz -> DateTime
+  const sh = s.get("hour");
+  const smin = s.isCertain("minute") ? s.get("minute") : 0;
+  const ss = s.isCertain("second") ? s.get("second") : 0;
+
+  const sBase = DateTime.fromObject(
+    { year: s.get("year"), month: s.get("month"), day: s.get("day"), hour: sh, minute: smin, second: ss },
+    { zone: "UTC" }
+  );
+  const startZ = applyZone(sBase, tzParsed!.zone);
+  if (!startZ || !startZ.isValid) return null;
+
+  // End time:
+  // - If chrono returns an end (e.g., "9am-5pm"), use it.
+  // - Otherwise use default duration.
+  let endZ: DateTime;
+  if (r.end) {
+    const e = r.end;
+    const eh = e.isCertain("hour") ? e.get("hour") : sh;
+    const emin = e.isCertain("minute") ? e.get("minute") : 0;
+    const esec = e.isCertain("second") ? e.get("second") : 0;
+
+    const eBase = DateTime.fromObject(
+      { year: e.get("year"), month: e.get("month"), day: e.get("day"), hour: eh, minute: emin, second: esec },
+      { zone: "UTC" }
+    );
+    const ez = applyZone(eBase, tzParsed!.zone);
+    if (!ez || !ez.isValid) return null;
+    endZ = ez;
+  } else {
+    endZ = startZ.plus({ minutes: defaultDurationMin });
+  }
+
+  // Guard: if user wrote a backwards range, still keep something sensible
+  if (endZ <= startZ) endZ = startZ.plus({ minutes: defaultDurationMin });
+
+  return { kind: "timed", start: startZ, end: endZ };
 }
+
+// For all-day, build UTC-midnight JS Dates
+function utcMidnightDate(y: number, m: number, d: number): Date {
+  return new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
+}
+
+
 
 // =====================
 // Bluesky fetch helpers
@@ -421,32 +509,48 @@ function buildCalendar(handle: string, events: CandidateEvent[], defaultDuration
   });
 
   for (const e of events) {
-    const when = parseWhen(e.whenBracket, e.referenceISO);
-    if (!when) continue;
-
-    const start = when.toJSDate();
-    const end = defaultDurationMin > 0 ? when.plus({ minutes: defaultDurationMin }).toJSDate() : undefined;
-
-    const uid =
-      e.kind === "full"
-        ? `${e.sourceUri}#${when.toISO()}`
-        : `${e.headerUri}->${e.detailsUri}#${when.toISO()}`;
+      const spec = parseWhenSpec(e.whenBracket, e.referenceISO, defaultDurationMin);
+    if (!spec) continue;
 
     const url =
       e.kind === "full"
         ? toBskyPermalink(e.sourceHandle, e.sourceUri)
         : toBskyPermalink(e.sourceHandle, e.detailsUri);
 
-    const description = url ? `${e.details}\n\n${url}` : e.details;
+    // Always append the footer line
+    const descParts = [e.details.trim()];
+    if (url) descParts.push(url);
+    descParts.push(FOOTER_LINE);
+    const description = descParts.filter(Boolean).join("\n\n");
 
-    cal.createEvent({
-      id: uid,
-      start,
-      end,
-      summary: e.title,
-      description,
-      url: url ?? undefined,
-    });
+    const uid =
+      e.kind === "full"
+        ? `${e.sourceUri}#${e.whenBracket}`
+        : `${e.headerUri}->${e.detailsUri}#${e.whenBracket}`;
+
+    if (spec.kind === "allday") {
+      const start = utcMidnightDate(spec.startDate.y, spec.startDate.m, spec.startDate.d);
+      const end = utcMidnightDate(spec.endDateExclusive.y, spec.endDateExclusive.m, spec.endDateExclusive.d);
+
+      cal.createEvent({
+        id: uid,
+        allDay: true,
+        start,
+        end,
+        summary: e.title,
+        description,
+        url: url ?? undefined,
+      });
+    } else {
+      cal.createEvent({
+        id: uid,
+        start: spec.start.toJSDate(),
+        end: spec.end.toJSDate(),
+        summary: e.title,
+        description,
+        url: url ?? undefined,
+      });
+    }
   }
 
   return cal.toString();
@@ -455,16 +559,21 @@ function buildCalendar(handle: string, events: CandidateEvent[], defaultDuration
 // =====================
 // Troubleshoot
 // =====================
-async function troubleshoot(handle: string): Promise<string> {
-  const lines: string[] = [];
-  lines.push(`SocialCalendar troubleshoot for: ${handle}`);
-  lines.push(`(recent items; timezone required; reply rules enabled)`);
-  lines.push("");
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function troubleshoot(handle: string, defaultDurationMin = 60): Promise<string> {
+  type Card =
+    | { kind: "event"; title: string; when: string; start: string; end: string; allDay: boolean; description: string; source: string }
+    | { kind: "skip"; source: string; reason: string };
+
+  const cards: Card[] = [];
 
   let cursor: string | undefined = undefined;
-  let shown = 0;
+  let considered = 0;
 
-  const PAGES = 2; // up to 200 items
+  const PAGES = 2; // cheap
   for (let page = 0; page < PAGES; page++) {
     const data = await bskyGet("app.bsky.feed.getAuthorFeed", {
       actor: handle,
@@ -481,92 +590,178 @@ async function troubleshoot(handle: string): Promise<string> {
       if (!post?.uri || !post?.record) continue;
 
       const txt = getPostText(post);
+      if (!hasSocialcal(txt)) continue; // show only likely-intended items
+
       const created = getPostCreatedAt(post);
-      const kind = isRepostItem(item) ? "repost" : (post?.record?.reply?.parent?.uri ? "reply" : "post");
 
-      // Only show items that contain #socialcal (or reply contains it)
-      if (!hasSocialcal(txt)) continue;
+      // Collect candidate events the same way the calendar does
+      const derived: CandidateEvent[] = [];
 
-      // Full event directly
-      const full = parseFullEventFormat(txt);
-      if (full) {
-        const when = parseWhen(full.when, created);
-        if (!when) {
-          lines.push(`❌ ${kind}: ${post.uri}`);
-          lines.push(`   reason: header datetime missing/invalid timezone (must end with ET/CT/MT/PT, IANA, Z, or ±HH:MM)`);
-        } else {
-          lines.push(`✅ ${kind}: ${post.uri}`);
-          lines.push(`   event: ${full.title}`);
-          lines.push(`   when:  ${full.when}  ->  ${when.toISO()}`);
-        }
-        lines.push("");
-        shown++;
-        if (shown >= 40) break;
-        continue;
+      const full = buildEventFromFullPost(post);
+      if (full) derived.push(full);
+
+      const isReply = !!post?.record?.reply?.parent?.uri;
+      if (isReply && hasSocialcal(txt)) {
+        const more = await deriveReplyTriggeredEvents(post);
+        derived.push(...more);
       }
 
-      // Reply-triggered
-      if (kind === "reply") {
-        const derived = await deriveReplyTriggeredEvents(post);
-        if (derived.length === 0) {
-          lines.push(`❌ reply: ${post.uri}`);
-          lines.push(`   reason: reply had #socialcal but could not form an event from parent/header/chain`);
-          lines.push("");
+      if (derived.length === 0) {
+        // Give a best reason
+        const hdr = parseReplyHeaderFormat(txt);
+        if (hdr) {
+          const spec = parseWhenSpec(hdr.when, created, defaultDurationMin);
+          const reason = spec ? "Header format belongs in a reply (or use full format in a post)." : "Header found but timezone missing/invalid (timed events require TZ).";
+          cards.push({ kind: "skip", source: post.uri, reason });
         } else {
-          for (const e of derived) {
-            const when = parseWhen(e.whenBracket, e.referenceISO);
-            if (!when) {
-              lines.push(`❌ reply-chain: ${post.uri}`);
-              lines.push(`   reason: derived event header had missing/invalid timezone`);
-              lines.push("");
-            } else {
-              lines.push(`✅ reply-chain: ${post.uri}`);
-              lines.push(`   event: ${e.title}`);
-              lines.push(`   when:  ${e.whenBracket}  ->  ${when.toISO()}`);
-              lines.push(`   source: ${e.kind === "full" ? e.sourceUri : `${e.headerUri} + ${e.detailsUri}`}`);
-              lines.push("");
-            }
+          cards.push({ kind: "skip", source: post.uri, reason: "Contains #socialcal but does not match required format." });
+        }
+      } else {
+        for (const e of derived) {
+          const spec = parseWhenSpec(e.whenBracket, e.referenceISO, defaultDurationMin);
+          if (!spec) {
+            cards.push({ kind: "skip", source: e.kind === "full" ? e.sourceUri : e.headerUri, reason: "Could not parse date/time (timed events require a supported timezone)." });
+            continue;
+          }
+
+          const url =
+            e.kind === "full"
+              ? toBskyPermalink(e.sourceHandle, e.sourceUri)
+              : toBskyPermalink(e.sourceHandle, e.detailsUri);
+
+          const descParts = [e.details.trim()];
+          if (url) descParts.push(url);
+          descParts.push(FOOTER_LINE);
+          const description = descParts.filter(Boolean).join("\n\n");
+
+          if (spec.kind === "allday") {
+            const start = DateTime.utc(spec.startDate.y, spec.startDate.m, spec.startDate.d).toISODate();
+            const endEx = DateTime.utc(spec.endDateExclusive.y, spec.endDateExclusive.m, spec.endDateExclusive.d).toISODate();
+            cards.push({
+              kind: "event",
+              title: e.title,
+              when: e.whenBracket,
+              start: start ?? "",
+              end: endEx ?? "",
+              allDay: true,
+              description,
+              source: e.kind === "full" ? e.sourceUri : `${e.headerUri} + ${e.detailsUri}`,
+            });
+          } else {
+            cards.push({
+              kind: "event",
+              title: e.title,
+              when: e.whenBracket,
+              start: spec.start.toISO(),
+              end: spec.end.toISO(),
+              allDay: false,
+              description,
+              source: e.kind === "full" ? e.sourceUri : `${e.headerUri} + ${e.detailsUri}`,
+            });
           }
         }
-        shown++;
-        if (shown >= 40) break;
-        continue;
       }
 
-      // Hashtag present but not parseable
-      const hdr = parseReplyHeaderFormat(txt);
-      if (hdr) {
-        const when = parseWhen(hdr.when, created);
-        if (!when) {
-          lines.push(`❌ ${kind}: ${post.uri}`);
-          lines.push(`   reason: header-format found, but timezone missing/invalid`);
-        } else {
-          lines.push(`❌ ${kind}: ${post.uri}`);
-          lines.push(`   reason: header-format belongs in a REPLY (or use full format in a post)`);
-          lines.push(`   header: ${hdr.when} | ${hdr.title}`);
-        }
-        lines.push("");
-      } else {
-        lines.push(`❌ ${kind}: ${post.uri}`);
-        lines.push(`   reason: contains #socialcal but does not match required format`);
-        lines.push("");
-      }
-
-      shown++;
-      if (shown >= 40) break;
+      considered++;
+      if (considered >= 40) break;
     }
 
-    if (shown >= 40 || !cursor) break;
+    if (considered >= 40 || !cursor) break;
   }
 
-  if (shown === 0) lines.push("No recent items with #socialcal found.\n");
+  const eventCards = cards.filter((c) => c.kind === "event") as Extract<Card, { kind: "event" }>[];
+  const skipCards = cards.filter((c) => c.kind === "skip") as Extract<Card, { kind: "skip" }>[];;
 
-  lines.push("Reminders:");
-  lines.push("- Full post format: [when TZ] Title\\n\\nDetails #socialcal");
-  lines.push("- Reply header format: [when TZ] Title #socialcal (one line)");
-  lines.push("- TZ must be last token inside brackets (ET/CT/MT/PT, IANA like America/Chicago, Z, or ±HH:MM).");
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>SocialCal Troubleshoot</title>
+<style>
+  body { font-family: system-ui,-apple-system,sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; line-height: 1.4; }
+  h1 { margin: 0 0 8px 0; }
+  .muted { color: #555; }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 16px 0; }
+  .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px 14px; background: #fff; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #f1f1f1; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #f7f7f7; padding: 10px; border-radius: 8px; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+  <h1>SocialCal Troubleshoot</h1>
+  <div class="muted">Handle: <b>${esc(handle)}</b></div>
 
-  return lines.join("\n");
+  <h2>Events that will appear in the calendar</h2>
+  <div class="grid">
+    ${eventCards.length === 0 ? `<div class="muted">No events parsed from recent #socialcal items.</div>` : eventCards.map(e => `
+  <div class="card">
+    <div class="row" style="justify-content: space-between; align-items: baseline;">
+      <div><b>${esc(e.title)}</b></div>
+      <div class="pill">${e.allDay ? "all-day" : "timed"}</div>
+    </div>
+
+    <div class="muted time"
+         data-allday="${e.allDay ? "true" : "false"}"
+         data-start="${esc(e.start)}"
+         data-end="${esc(e.end)}">
+      <!-- filled by JS -->
+    </div>
+
+    <div style="margin-top:10px;"><b>Description:</b></div>
+    <pre>${esc(e.description)}</pre>
+  </div>
+`).join("")}
+  </div>
+
+  <h2>Skipped items</h2>
+  <div class="grid">
+    ${skipCards.length === 0 ? `<div class="muted">None.</div>` : skipCards.map(s => `
+      <div class="card">
+        <div class="muted">Source: <code>${esc(s.source)}</code></div>
+        <div><b>Reason:</b> ${esc(s.reason)}</div>
+      </div>
+    `).join("")}
+  </div>
+
+  <div class="muted" style="margin-top:24px;">
+    Reminder: timed events require TZ (ET/CT/MT/PT, IANA like America/Chicago, Z, or ±HH:MM). Date-only events are all-day and TZ is optional.
+  </div>
+</body>
+<script>
+(function () {
+  const fmtDate = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const fmtTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+
+  function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  for (const el of document.querySelectorAll(".time")) {
+    const allDay = el.dataset.allday === "true";
+    const start = el.dataset.start ? new Date(el.dataset.start) : null;
+    const end = el.dataset.end ? new Date(el.dataset.end) : null;
+    if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) {
+      el.textContent = "";
+      continue;
+    }
+
+    if (allDay) {
+      // end is exclusive; display inclusive end date
+      const endInclusive = new Date(end.getTime());
+      endInclusive.setDate(endInclusive.getDate() - 1);
+
+      el.textContent = sameDay(start, endInclusive)
+        ? fmtDate.format(start)
+        : fmtDate.format(start) + " – " + fmtDate.format(endInclusive);
+    } else {
+      el.textContent = fmtDate.format(start) + " · " + fmtTime.format(start) + " – " + fmtTime.format(end);
+    }
+  }
+})();
+</script>
+</html>`;
 }
 
 // =====================
@@ -643,11 +838,11 @@ export default {
       }
 
       try {
-        const report = await troubleshoot(handle);
-        await cachePut(env, handle, "ts", report, "text/plain; charset=utf-8", tsTtl);
+        const report = await troubleshoot(handle, defaultDurationMin);
+        await cachePut(env, handle, "ts", report, "text/html; charset=utf-8", tsTtl);
         return new Response(report, {
           headers: {
-            "Content-Type": "text/plain; charset=utf-8",
+            "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "no-store",
           },
         });
