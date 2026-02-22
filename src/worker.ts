@@ -230,14 +230,21 @@ function parseWhenSpec(bracket: string, referenceISO: string, defaultDurationMin
   // - If chrono returns an end (e.g., "9am-5pm"), use it.
   // - Otherwise use default duration.
   let endZ: DateTime;
+
   if (r.end) {
     const e = r.end;
+
     const eh = e.isCertain("hour") ? e.get("hour") : sh;
     const emin = e.isCertain("minute") ? e.get("minute") : 0;
     const esec = e.isCertain("second") ? e.get("second") : 0;
 
+    // Inherit start date unless end explicitly specifies a date
+    const ey = e.isCertain("year") ? e.get("year") : s.get("year");
+    const em = e.isCertain("month") ? e.get("month") : s.get("month");
+    const ed = e.isCertain("day") ? e.get("day") : s.get("day");
+
     const eBase = DateTime.fromObject(
-      { year: e.get("year"), month: e.get("month"), day: e.get("day"), hour: eh, minute: emin, second: esec },
+      { year: ey, month: em, day: ed, hour: eh, minute: emin, second: esec },
       { zone: "UTC" }
     );
     const ez = applyZone(eBase, tzParsed!.zone);
@@ -246,6 +253,7 @@ function parseWhenSpec(bracket: string, referenceISO: string, defaultDurationMin
   } else {
     endZ = startZ.plus({ minutes: defaultDurationMin });
   }
+  
 
   // Guard: if user wrote a backwards range, still keep something sensible
   if (endZ <= startZ) endZ = startZ.plus({ minutes: defaultDurationMin });
@@ -647,8 +655,8 @@ function buildCalendar(handle: string, events: DerivedEvent[]): string {
     } else {
       cal.createEvent({
         id: e.uid,
-        start: e.when.start.toJSDate(),
-        end: e.when.end.toJSDate(),
+        start: e.when.start,
+        end: e.when.end,
         summary: e.title,
         description: e.description,
         url: e.permalink ?? undefined,
@@ -765,7 +773,11 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
         ? fmtDate.format(start)
         : fmtDate.format(start) + " – " + fmtDate.format(endInclusive);
     } else {
-      el.textContent = fmtDate.format(start) + " · " + fmtTime.format(start) + " – " + fmtTime.format(end);
+      if (sameDay(start, end)) {
+     	el.textContent = fmtDate.format(start) + " · " + fmtTime.format(start) + " – " + fmtTime.format(end);
+      } else {
+        el.textContent = fmtDate.format(start) + " " + fmtTime.format(start) + " – " + fmtDate.format(end) + " " + fmtTime.format(end);
+      }
     }
   }
 })();
