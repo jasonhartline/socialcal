@@ -637,6 +637,9 @@ function buildCalendar(handle: string, events: DerivedEvent[]): string {
     name: `SocialCalendar: ${handle}`,
     prodId: { company: "socialcalendar.org", product: "socialcalendar", language: "EN" },
   });
+  cal.ttl(60 * 60); // 1 hour
+
+
 
   for (const e of events) {
     if (e.when.kind === "allday") {
