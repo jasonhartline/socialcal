@@ -681,9 +681,9 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
   const eventCards = events.map((e) => {
     if (e.when.kind === "allday") {
       const startISO =
-        DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toISO() ?? "";
+        DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toISODate() ?? "";
       const endISO =
-        DateTime.utc(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d).toISO() ?? "";
+        DateTime.utc(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d).toISODate() ?? "";
       return { title: e.title, allDay: true, start: startISO, end: endISO, description: e.description };
     } else {
       return {
@@ -763,25 +763,42 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
 
   for (const el of document.querySelectorAll(".time")) {
     const allDay = el.dataset.allday === "true";
-    const start = el.dataset.start ? new Date(el.dataset.start) : null;
-    const end = el.dataset.end ? new Date(el.dataset.end) : null;
+    const s = el.dataset.start || "";
+    const e = el.dataset.end || "";
+
+    if (allDay) {
+      // Expect YYYY-MM-DD strings (end is exclusive)
+      const [sy, sm, sd] = s.split("-").map(Number);
+      const [ey, em, ed] = e.split("-").map(Number);
+      if (!sy || !sm || !sd || !ey || !em || !ed) { el.textContent = ""; continue; }
+
+      const start = new Date(sy, sm - 1, sd);   // local date, no TZ shift
+      const endEx = new Date(ey, em - 1, ed);   // local exclusive end
+      const endInclusive = new Date(endEx);
+      endInclusive.setDate(endInclusive.getDate() - 1);
+
+      el.textContent = sameDay(start, endInclusive)
+        ? fmtDate.format(start)
+        : fmtDate.format(start) + " – " + fmtDate.format(endInclusive);
+
+      continue;
+    }
+
+    // Timed: expect ISO timestamps
+    const start = s ? new Date(s) : null;
+    const end = e ? new Date(e) : null;
     if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) {
       el.textContent = "";
       continue;
     }
 
-    if (allDay) {
-      const endInclusive = new Date(end.getTime());
-      endInclusive.setDate(endInclusive.getDate() - 1);
-      el.textContent = sameDay(start, endInclusive)
-        ? fmtDate.format(start)
-        : fmtDate.format(start) + " – " + fmtDate.format(endInclusive);
+    if (sameDay(start, end)) {
+      el.textContent = fmtDate.format(start) + " · " + fmtTime.format(start) + " – " + fmtTime.format(end);
     } else {
-      if (sameDay(start, end)) {
-     	el.textContent = fmtDate.format(start) + " · " + fmtTime.format(start) + " – " + fmtTime.format(end);
-      } else {
-        el.textContent = fmtDate.format(start) + " " + fmtTime.format(start) + " – " + fmtDate.format(end) + " " + fmtTime.format(end);
-      }
+      el.textContent =
+        fmtDate.format(start) + " " + fmtTime.format(start) +
+        " – " +
+        fmtDate.format(end) + " " + fmtTime.format(end);
     }
   }
 })();
