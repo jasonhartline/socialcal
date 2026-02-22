@@ -6,14 +6,71 @@
   <title>SocialCal User Manual (v1)</title>
   <style>
     :root { --fg:#111; --muted:#555; --bg:#fff; --codebg:#f6f8fa; --border:#e5e7eb; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-           color: var(--fg); background: var(--bg); margin: 0; }
-    main { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.45; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+      margin: 0;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 32px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+      line-height: 1.45;
+    }
+
+    .sidebar {
+      padding: 32px 20px 64px 0;
+    }
+
+    .sidebar-card {
+      position: sticky;
+      top: 24px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      background: #fafafa;
+    }
+
+    #bsky-feed {
+      max-height: 70vh;
+      overflow-y: auto;
+    }
+
+    .bsky-post {
+      border-top: 1px solid var(--border);
+      padding: 10px 0;
+      font-size: 0.9rem;
+    }
+
+    .bsky-post:first-child { border-top: none; }
+
+    .bsky-handle {
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .bsky-text {
+      margin: 6px 0;
+      white-space: pre-wrap;
+    }
+
     h1 { font-size: 2rem; margin: 0 0 8px; }
     h2 { font-size: 1.35rem; margin: 28px 0 10px; }
     h3 { font-size: 1.1rem; margin: 18px 0 8px; }
     p, li { font-size: 1rem; }
     .muted { color: var(--muted); }
+
     .callout {
       border: 1px solid var(--border);
       border-left: 4px solid #3b82f6;
@@ -22,9 +79,11 @@
       background: #fbfdff;
       margin: 14px 0;
     }
+
     code, pre {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
+
     pre {
       background: var(--codebg);
       padding: 12px 14px;
@@ -33,202 +92,118 @@
       border: 1px solid var(--border);
       margin: 10px 0 14px;
     }
+
     code { background: #f2f4f7; padding: 0.1em 0.3em; border-radius: 6px; }
+
     a { color: #2563eb; text-decoration: none; }
     a:hover { text-decoration: underline; }
+
     table { border-collapse: collapse; width: 100%; margin: 10px 0 14px; }
     th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
     th { background: #f9fafb; }
+
     hr { border: 0; border-top: 1px solid var(--border); margin: 22px 0; }
+
+    @media (max-width: 1000px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { padding: 0 20px 40px; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>SocialCal</h1>
-    <p class="muted">User Manual (v1)</p>
 
-    <p>Turn Bluesky posts into a live calendar.</p>
+<div class="layout">
 
-    <div class="callout">
-      <strong>Calendar URL</strong><br />
-      Add this URL to your calendar app:
-      <pre><code>https://socialcal.org/ics?handle=&lt;your-handle&gt;</code></pre>
-      <span class="muted">Your calendar app will refresh automatically.</span>
-    </div>
+<main>
 
-    <h2>How It Works</h2>
-    <p>SocialCal scans:</p>
-    <ul>
-      <li>Posts you write</li>
-      <li>Posts you repost</li>
-      <li>Posts you reply to <span class="muted">(see “Using Replies”)</span></li>
-    </ul>
-    <p>It looks for the hashtag:</p>
-    <pre><code>#socialcal</code></pre>
+<h1>SocialCal</h1>
+<p class="muted">User Manual (v1)</p>
 
+<p>Turn Bluesky posts into a live calendar.</p>
 
+<div class="callout">
+<strong>Calendar URL</strong><br />
+Add this URL to your calendar app:
+<pre><code>https://socialcal.org/ics?handle=&lt;your-handle&gt;</code></pre>
+<span class="muted">Your calendar app will refresh automatically.</span>
+</div>
 
-    <h2>Adding to Your Calendar</h2>
-    <p>Use:</p>
-    <pre><code>https://socialcal.org/ics?handle=&lt;your-handle&gt;</code></pre>
-
-    <p>In common calendar apps:</p>
-    <ul>
-      <li><strong>Google Calendar</strong> → “From URL”</li>
-      <li><strong>Apple Calendar</strong> → “New Calendar Subscription”</li>
-      <li><strong>Outlook</strong> → “Subscribe from Web”</li>
-    </ul>
-
-    <h2>Troubleshooting</h2>
-    <p>Too see the posts SocialCal is trying to add to your calendar, view:</p>
-    <pre><code>https://socialcal.org/troubleshoot?handle=&lt;your-handle&gt;</code></pre>
-    
-
-    
-    <h2>Creating an Event (Simple Case)</h2>
-    <p>Write a post in this format:</p>
-    <pre><code>[date and time with timezone] Title of Event
-
-Details about the event #socialcal</code></pre>
-
-    <p>Example:</p>
-    <pre><code>[March 22 7pm CT] Drinks at Maria’s
-
-Back room. Bring friends. #socialcal</code></pre>
-
-    <p>This becomes:</p>
-    <ul>
-      <li><strong>Title</strong>: Drinks at Maria’s</li>
-      <li><strong>Time</strong>: March 22, 7pm Central Time</li>
-      <li><strong>Description</strong>: Back room. Bring friends.</li>
-    </ul>
-
-    <h2>RSVPing to an Event Post (Simple Case)</h2>
-
-    <p>If you <i>repost</i> a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
-
-    
-<h2>Time & Date Format</h2>
-
-<p>The first line of your post must start with a bracketed date/time:</p>
-
-<pre>[March 5 9am CT] Weekly Coffee
-#socialcal</pre>
-
-<h3>Timed Events (timezone required)</h3>
-
+<h2>How It Works</h2>
+<p>SocialCal scans:</p>
 <ul>
-  <li><code>[March 5 9am CT]</code> → 60 minute event (default duration)</li>
-  <li><code>[March 5 9am-11am CT]</code> → explicit time range</li>
-  <li><code>[tomorrow 6pm ET]</code> → relative dates supported</li>
+<li>Posts you write</li>
+<li>Posts you repost</li>
+<li>Posts you reply to <span class="muted">(see “Using Replies”)</span></li>
 </ul>
 
+<p>It looks for the hashtag:</p>
+<pre><code>#socialcal</code></pre>
+
+<h2>Adding to Your Calendar</h2>
+<pre><code>https://socialcal.org/ics?handle=&lt;your-handle&gt;</code></pre>
+
+<h2>Open Source</h2>
 <p>
-For timed events, a timezone is required. Supported formats:
-<code>ET</code>, <code>CT</code>, <code>MT</code>, <code>PT</code>,
-IANA zones like <code>America/Chicago</code>,
-<code>Z</code>, or <code>±HH:MM</code>.
-</p>
-
-<h3>All-Day Events (timezone optional)</h3>
-
-<ul>
-  <li><code>[March 5]</code> → single-day all-day event</li>
-  <li><code>[March 5–10]</code> → multi-day event (inclusive)</li>
-  <li><code>[March 5-10]</code> → hyphen also supported</li>
-</ul>
-
-<p>
-Date-only events become all-day calendar entries.  
-Date ranges are interpreted as inclusive (March 5–10 includes both March 5 and March 10).
-</p>
-
-    <h2>Using Reposts to Add Events</h2>
-
-    <p>If you repost a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
-
-
-    <h2>Using Replies to Add Events</h2>
-    <p>Replies let you turn someone else’s post into an event. <strong>Replies are only considered if your reply contains <code>#socialcal</code></strong>.</p>
-
-    <h3>1) Parent post already contains a full event</h3>
-    <p>If you reply <em>with</em> <code>#socialcal</code> to a post that already has the correct format and includes <code>#socialcal</code>, that parent post becomes an event.</p>
-
-    <p><strong>Parent:</strong></p>
-    <pre><code>[March 22 7pm CT] Seminar
-
-Room 240. #socialcal</code></pre>
-
-    <p><strong>Your reply:</strong></p>
-    <pre><code>Looking forward! #socialcal</code></pre>
-
-    <p><strong>Result:</strong> The parent post becomes an event.</p>
-
-    <h3>2) Reply supplies the event header</h3>
-    <p>If the parent post does not contain event formatting, your reply can provide it using a one-line header:</p>
-    <pre><code>[date and time with timezone] Title of Event #socialcal</code></pre>
-
-    <p><strong>Parent (details):</strong></p>
-    <pre><code>Dinner at Maria’s. Back room.</code></pre>
-
-    <p><strong>Your reply (header):</strong></p>
-    <pre><code>[March 22 7pm CT] Dinner #socialcal</code></pre>
-
-    <p><strong>Result:</strong></p>
-    <ul>
-      <li>Date/time/title come from your reply.</li>
-      <li>Event details/description come from the parent post.</li>
-    </ul>
-
-    <h3>3) Hashtag-only replies</h3>
-    <p>If a reply chain already established either:</p>
-    <ul>
-      <li>a full event post, or</li>
-      <li>a header reply</li>
-    </ul>
-    <p>then a later reply that contains only:</p>
-    <pre><code>#socialcal</code></pre>
-    <p>will combine the pieces and create the event if possible. This allows simple “add this” interactions without repeating the header.</p>
-
-
-    <h2>What Gets Ignored</h2>
-    <p>Posts are skipped if:</p>
-    <ul>
-      <li><code>#socialcal</code> is missing (except when a reply with <code>#socialcal</code> triggers inclusion via the reply rules)</li>
-      <li>Date/time is missing</li>
-      <li>Timezone is missing or invalid</li>
-      <li>The required formatting is malformed</li>
-      <li>The referenced parent post is unavailable</li>
-    </ul>
-
-    <h2>Best Practices</h2>
-    <p>Keep formatting clean.</p>
-
-    <p><strong>Good:</strong></p>
-    <pre><code>[March 22 7pm CT] Dinner
-
-Back room at Maria’s. #socialcal</code></pre>
-
-    <p><strong>Avoid:</strong></p>
-    <pre><code>Dinner March 22 at 7 CT #socialcal</code></pre>
-
-    <p class="muted">Remember: the timezone must be the last token inside the brackets.</p>
-
-    <h2>Deduplication</h2>
-    <p>If multiple posts/replies reference the same event, it will appear only once.</p>
-
-
-    <p class="muted">That’s it — post events with <code>#socialcal</code>, and your calendar stays up to date.</p>
-
-    <h2>Open Source</h2>
-
-<p>
-SocialCal is open source:
 <a href="https://github.com/jasonhartline/socialcal">
 https://github.com/jasonhartline/socialcal
 </a>
 </p>
-    
-  </main>
+
+</main>
+
+<aside class="sidebar">
+<div class="sidebar-card">
+<h3>#socialcal on Bluesky</h3>
+<div id="bsky-feed">Loading…</div>
+</div>
+</aside>
+
+</div>
+
+<script>
+(async () => {
+  const el = document.getElementById("bsky-feed");
+  const url = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts?q=%23socialcal&limit=20";
+
+  const esc = s => String(s)
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;");
+
+  try {
+    const res = await fetch(url, { headers: { "Accept": "application/json" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const posts = Array.isArray(data.posts) ? data.posts : [];
+
+    if (!posts.length) {
+      el.innerHTML = "<p>No recent posts.</p>";
+      return;
+    }
+
+    el.innerHTML = posts.map(p => {
+      const handle = p.author?.handle || "";
+      const text = p.record?.text || "";
+      const postId = p.uri?.split("/").pop();
+      const link = (handle && postId)
+        ? `https://bsky.app/profile/${encodeURIComponent(handle)}/post/${encodeURIComponent(postId)}`
+        : "https://bsky.app/search?q=%23socialcal";
+
+      return `
+        <div class="bsky-post">
+          <div class="bsky-handle">@${esc(handle)}</div>
+          <div class="bsky-text">${esc(text)}</div>
+          <a href="${link}" target="_blank" rel="noopener noreferrer">view</a>
+        </div>
+      `;
+    }).join("");
+
+  } catch (e) {
+    el.innerHTML =
+      `<p>Could not load feed (${esc(e.message)}). <a href="https://bsky.app/search?q=%23socialcal" target="_blank" rel="noopener noreferrer">View on Bluesky</a></p>`;
+  }
+})();
+</script>
+
 </body>
 </html>
