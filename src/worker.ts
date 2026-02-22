@@ -699,6 +699,7 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
   return `<!doctype html>
 <html>
 <head>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta charset="utf-8" />
 <title>SocialCal Troubleshoot</title>
 <style>
