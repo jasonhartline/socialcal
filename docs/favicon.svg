@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+
+  <!-- Calendar body - light gray instead of white -->
+  <rect x="4" y="16" width="56" height="44" rx="5" fill="#D0D0D0" stroke="#BBBBBB" stroke-width="2"/>
+
+  <!-- Blue header -->
+  <rect x="4" y="16" width="56" height="16" rx="5" fill="#0085FF"/>
+  <rect x="4" y="24" width="56" height="8" fill="#0085FF"/>
+
+  <!-- Binding rings -->
+  <rect x="17" y="9"  width="7" height="14" rx="3.5" fill="#444"/>
+  <rect x="40" y="9"  width="7" height="14" rx="3.5" fill="#444"/>
+
+  <!-- Grid lines -->
+  <line x1="4"  y1="40" x2="60" y2="40" stroke="#BBBBBB" stroke-width="1.5"/>
+  <line x1="4"  y1="52" x2="60" y2="52" stroke="#BBBBBB" stroke-width="1.5"/>
+  <line x1="25" y1="32" x2="25" y2="60" stroke="#BBBBBB" stroke-width="1.5"/>
+  <line x1="46" y1="32" x2="46" y2="60" stroke="#BBBBBB" stroke-width="1.5"/>
+
+  <!-- Highlighted cell -->
+  <rect x="47" y="41" width="12" height="10" rx="2" fill="#0085FF"/>
+
+  <!-- Bluesky butterfly: white on blue header -->
+  <g transform="translate(32, 24) scale(3) translate(-8,-8)">
+    <path fill="white" d="M3.468 1.948C5.303 3.325 7.276 6.118 8 7.616c.725-1.498 2.698-4.29 4.532-5.668C13.855.955 16 .186 16 2.632c0 .489-.28 4.105-.444 4.692-.572 2.04-2.653 2.561-4.504 2.246 3.236.551 4.06 2.375 2.281 4.2-3.376 3.464-4.852-.87-5.23-1.98-.07-.204-.103-.3-.103-.218 0-.081-.033.014-.102.218-.379 1.11-1.855 5.444-5.231 1.98-1.778-1.825-.955-3.65 2.28-4.2-1.85.315-3.932-.205-4.503-2.246C.28 6.737 0 3.12 0 2.632 0 .186 2.145.955 3.468 1.948"/>
+  </g>
+
+</svg>

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title>SocialCal User Manual (v1)</title>
   <style>
     :root { --fg:#111; --muted:#555; --bg:#fff; --codebg:#f6f8fa; --border:#e5e7eb; }
@@ -13,6 +14,11 @@
     h2 { font-size: 1.35rem; margin: 28px 0 10px; }
     h3 { font-size: 1.1rem; margin: 18px 0 8px; }
     p, li { font-size: 1rem; }
+    .emoji-img {
+  height: 1em;      /* Sets the image height equal to the current font size */
+  width: auto;      /* Maintains the image's aspect ratio */
+  vertical-align: middle; /* Aligns the image vertically with the text baseline */
+    }
     .muted { color: var(--muted); }
     .callout {
       border: 1px solid var(--border);
@@ -40,11 +46,25 @@
     th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
     th { background: #f9fafb; }
     hr { border: 0; border-top: 1px solid var(--border); margin: 22px 0; }
+    h1::before, h2::before, h3::before {
+  content: '';
+  display: inline-block;
+  height: 1em;
+  width: 1em;
+  background: url('favicon.svg') no-repeat center / contain;
+  vertical-align: baseline;
+  position: relative;
+    bottom: -0.1em;
+  margin-right: 0.3em;
+}
   </style>
 </head>
 <body>
   <main>
     <h1>SocialCal</h1>
+
+    <p> "Turn Bluesky posts into calender events."
+
     <p class="muted">User Manual (v1)</p>
 
     <p>Turn Bluesky posts into a live calendar.</p>
@@ -225,10 +245,8 @@ Back room at Maria’s. #socialcal</code></pre>
     <h2>Open Source</h2>
 
 <p>
-SocialCal is open source:
-<a href="https://github.com/jasonhartline/socialcal">
-https://github.com/jasonhartline/socialcal
-</a>
+SocialCal is open source at
+<a href="https://github.com/jasonhartline/socialcal">https://github.com/jasonhartline/socialcal</a> and maintained by <a href="https://bsky.app/profile/jasonhartline.bsky.social">@jasonhartline.bsky.social</a>.
 </p>
     
   </main>
