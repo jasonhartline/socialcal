@@ -63,7 +63,7 @@
   <main>
     <h1>SocialCal</h1>
 
-    <p> "Turn Bluesky posts into calender events."
+    <p> "Turn Bluesky posts into calender events."</p>
 
     <p class="muted">User Manual (v1)</p>
 
@@ -86,6 +86,8 @@
     <p>It looks for the hashtag:</p>
     <pre><code>#socialcal</code></pre>
 
+   <p>See examples on Bluesky under <a href="https://bsky.app/hashtag/socialcal">#socialcal</a>.</p>
+
 
 
     <h2>Adding to Your Calendar</h2>
@@ -98,12 +100,16 @@
       <li><strong>Apple Calendar</strong> → “New Calendar Subscription”</li>
       <li><strong>Outlook</strong> → “Subscribe from Web”</li>
     </ul>
-    <p>Note: Some calendars such as Google Calendar pull external URL ICS feeds infrequently.  Your most recent events can take up to 24 hours to appear.  Use 'troubleshooting' to see your #socialcal calendar events immediately.
+    <p>Note: Some calendars such as Google Calendar pull external URL ICS feeds infrequently.  Your most recent events can take up to 24 hours to appear.  Use <b>Viewing and Troubleshooting</b> to see your #socialcal calendar events immediately.
     </p>
+
+    <h2>Viewing and Troubleshooting</h2>
     
-    <h2>Troubleshooting</h2>
-    <p>Too see the posts SocialCal is trying to add to your calendar, view:</p>
-    <pre><code>https://socialcal.org/troubleshoot?handle=&lt;your-handle&gt;</code></pre>
+    <p>To see the events SocialCal is generating from your posts, visit:</p>
+    <pre><code>https://socialcal.org/show?handle=&lt;your-handle&gt;</code></pre>
+    <p>To include parsing errors in the report:</p>
+    <pre><code>https://socialcal.org/show?handle=&lt;your-handle&gt;&amp;errors=true</code></pre>
+
     
 
     
@@ -125,14 +131,17 @@ Back room. Bring friends. #socialcal</code></pre>
       <li><strong>Description</strong>: Back room. Bring friends.</li>
     </ul>
 
-    <h2>RSVPing to an Event Post (Simple Case)</h2>
+   <p>See examples on Bluesky under <a href="https://bsky.app/hashtag/socialcal">#socialcal</a>.</p>
 
-    <p>If you <i>repost</i> a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
+    
+    <h2>RSVPing to a SocialCal Event Post (Simple Case)</h2>
+
+    <p>If you <i>repost</i> a post already containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
 
     
 <h2>Time & Date Format</h2>
 
-<p>The first line of your post must start with a bracketed date/time:</p>
+<p>When creating a SocialCal event post, the first line of your post must start with a bracketed date/time:</p>
 
 <pre>[March 5 9am CT] Weekly Coffee
 #socialcal</pre>
@@ -171,7 +180,7 @@ Date ranges are interpreted as inclusive (March 5–10 includes both March 5 and
 
 
     <h2>Using Replies to Add Events</h2>
-    <p>Replies let you turn someone else’s post into an event. <strong>Replies are only considered if your reply contains <code>#socialcal</code></strong>.</p>
+    <p>Replies let you turn someone else's post into an event. <strong>Replies are only considered if your reply contains <code>#socialcal</code></strong>.</p>
 
     <h3>1) Parent post already contains a full event</h3>
     <p>If you reply <em>with</em> <code>#socialcal</code> to a post that already has the correct format and includes <code>#socialcal</code>, that parent post becomes an event.</p>

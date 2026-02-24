@@ -415,9 +415,8 @@ type DerivedSkip = {
 };
 
 function candidateUid(e: CandidateEvent): string {
-  return e.kind === "full"
-    ? `${e.sourceUri}#${e.whenBracket}`
-    : `${e.headerUri}->${e.detailsUri}#${e.whenBracket}`;
+  if (e.kind === "full") return e.sourceUri;
+  return e.detailsUri; // canonical for combo
 }
 
 function candidatePermalink(e: CandidateEvent): string | null {
@@ -673,12 +672,23 @@ function buildCalendar(handle: string, events: DerivedEvent[]): string {
 // =====================
 // Troubleshoot
 // =====================
+function eventStartMillis(e: DerivedEvent): number {
+  if (e.when.kind === "timed") return e.when.start.toMillis();
+  return DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toMillis();
+}
+
+function sortEventsByStart(events: DerivedEvent[]): DerivedEvent[] {
+  return [...events].sort((a, b) => eventStartMillis(a) - eventStartMillis(b));
+}
+
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: DerivedSkip[]): string {
-  const eventCards = events.map((e) => {
+function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: DerivedSkip[], showErrors: boolean): string {
+  const profileUrl = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+  const sorted = sortEventsByStart(events);
+  const eventCards = sorted.map((e) => {
     if (e.when.kind === "allday") {
       const startISO =
         DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toISODate() ?? "";
@@ -701,7 +711,7 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
 <head>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta charset="utf-8" />
-<title>SocialCal Troubleshoot</title>
+<title>SocialCal</title>
 <style>
   body { font-family: system-ui,-apple-system,sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; line-height: 1.4; }
   h1 { margin: 0 0 8px 0; }
@@ -714,10 +724,23 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
 </style>
 </head>
 <body>
-  <h1>SocialCal Troubleshoot</h1>
-  <div class="muted">Handle: <b>${esc(handle)}</b></div>
+  <h1>SocialCal</h1>
+  <div class="muted"><a href="https://bsky.app/profile/${profileUrl}">@${esc(handle)}</a></div>
 
-  <h2>Events that will appear in the calendar</h2>
+  ${showErrors && skipped.length > 0 ? `
+  <div class="grid" style="margin-top: 16px;">
+    <div class="card">
+      <div style="margin-bottom: 8px;"><b>Errors</b></div>
+      ${skipped.map(s => `
+        <div style="margin: 10px 0;">
+          <div class="muted"><code>${esc(s.sourceUri)}</code></div>
+          <div><b>Reason:</b> ${esc(s.reason)}</div>
+        </div>
+      `).join("")}
+    </div>
+  </div>
+` : ""}
+
   <div class="grid">
     ${eventCards.length === 0 ? `<div class="muted">No events parsed from recent #socialcal items.</div>` : eventCards.map(e => `
       <div class="card">
@@ -738,18 +761,8 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
     `).join("")}
   </div>
 
-  <h2>Skipped items</h2>
-  <div class="grid">
-    ${skipped.length === 0 ? `<div class="muted">None.</div>` : skipped.map(s => `
-      <div class="card">
-        <div class="muted"><code>${esc(s.sourceUri)}</code></div>
-        <div><b>Reason:</b> ${esc(s.reason)}</div>
-      </div>
-    `).join("")}
-  </div>
-
   <div class="muted" style="margin-top:24px;">
-    Reminder: timed events require TZ (ET/CT/MT/PT, IANA like America/Chicago, Z, or ±HH:MM). Date-only events are all-day and TZ is optional.
+    Events from <a href="https://bsky.app/profile/${profileUrl}">Bluesky</a> via <a href="https://socialcal.org/">SocialCal</a>.
   </div>
 
 <script>
@@ -835,7 +848,7 @@ async function checkRateLimit(env: Env, handle: string): Promise<{ ok: true } | 
   return { ok: true };
 }
 
-async function cacheGet(env: Env, handle: string, kind: "ics" | "ts"): Promise<{ hit: false } | { hit: true; body: string; contentType: string }> {
+async function cacheGet(env: Env, handle: string, kind: "ics" | "show"): Promise<{ hit: false } | { hit: true; body: string; contentType: string }> {
   const id = env.RATE_LIMITER.idFromName(rateKey(handle));
   const stub = env.RATE_LIMITER.get(id);
   const res = await doFetchJson(stub, "cache/get", { handle: rateKey(handle), kind });
@@ -856,10 +869,17 @@ async function cachePut(env: Env, handle: string, kind: "ics" | "ts", body: stri
 // =====================
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
+    let url = new URL(request.url);    
     const handle = url.searchParams.get("handle")?.trim();
     if (!handle) return new Response("Missing handle", { status: 400 });
 
+    // /troubleshoot is just an alias for /show with errors=true
+    if (url.pathname === "/troubleshoot") {
+      url.pathname = "/show";
+      url.searchParams.set("errors", "true");
+      return Response.redirect(url.toString(), 302);
+    }
+    
     // Rate limit per handle (shared across /ics and /troubleshoot)
     const rl = await checkRateLimit(env, handle);
     if (!rl.ok) {
@@ -871,36 +891,24 @@ export default {
 
     const { icsTtl, icsMaxAge, icsSwr, tsTtl, defaultDurationMin } = cacheConfig(env);
 
-    if (url.pathname === "/troubleshoot") {
-      // DO cache for a short TTL to prevent bursts
-      const cached = await cacheGet(env, handle, "ts");
-      if (cached.hit) {
-        return new Response(cached.body, {
-          headers: {
-            "Content-Type": cached.contentType,
-            "Cache-Control": "no-store",
-          },
-        });
-      }
 
+    if (url.pathname === "/show") {
+      const showErrors = url.searchParams.get("errors") === "true";
       try {
-
-      	const candidates = await collectCandidates(handle);
-        const { derived, skipped } = deriveFromCandidates(candidates, defaultDurationMin);
-        const report = troubleshootHTML(handle, derived, skipped);
-	
-        await cachePut(env, handle, "ts", report, "text/html; charset=utf-8", tsTtl);
-        return new Response(report, {
-          headers: {
+	const candidates = await collectCandidates(handle);
+	const { derived, skipped } = deriveFromCandidates(candidates, defaultDurationMin);
+	const html = troubleshootHTML(handle, derived, skipped, showErrors);
+	return new Response(html, {
+	  headers: {
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "no-store",
-          },
-        });
+	  },
+	});
       } catch (err: any) {
-        return new Response(`Error: ${err?.message ?? String(err)}`, { status: 502 });
+	return new Response(`Error: ${err?.message ?? String(err)}`, { status: 502 });
       }
     }
-
+    
     if (url.pathname !== "/ics") return new Response("Not Found", { status: 404 });
 
     // DO cache (per handle) to avoid repeated Bluesky fetches
