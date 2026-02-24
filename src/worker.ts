@@ -425,15 +425,22 @@ function candidatePermalink(e: CandidateEvent): string | null {
     : toBskyPermalink(e.sourceHandle, e.detailsUri);
 }
 
-function buildEventDescription(details: string, permalink: string | null): string {
+function buildEventDescription(details: string, permalink: string | null, handle: string): string {
   const d = (details ?? "").trim();
+
+  const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+  const socialcalShow = `https://socialcal.org/show?handle=${encodeURIComponent(handle)}`;
+
   const footer = permalink
-    ? `Source: <${permalink}> · via SocialCal <https://socialcal.org/>`
-    : `via SocialCal <https://socialcal.org/>`;
+    ? `From Bluesky <${blueskyProfile}> via SocialCal <${socialcalShow}>`
+    : `via SocialCal <${socialcalShow}>`;
+
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
 
-function deriveFromCandidates(events: CandidateEvent[], defaultDurationMin: number): { derived: DerivedEvent[]; skipped: DerivedSkip[] } {
+
+function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultDurationMin: number): { derived: DerivedEvent[]; skipped: DerivedSkip[] } {
+
   const derived: DerivedEvent[] = [];
   const skipped: DerivedSkip[] = [];
 
@@ -449,7 +456,7 @@ function deriveFromCandidates(events: CandidateEvent[], defaultDurationMin: numb
 
     const permalink = candidatePermalink(e);
     const uid = candidateUid(e);
-    const description = buildEventDescription(e.details, permalink);
+    const description = buildEventDescription(e.details, permalink, handle);    
 
     derived.push({
       uid,
@@ -896,7 +903,7 @@ export default {
       const showErrors = url.searchParams.get("errors") === "true";
       try {
 	const candidates = await collectCandidates(handle);
-	const { derived, skipped } = deriveFromCandidates(candidates, defaultDurationMin);
+	const { derived, skipped } = deriveFromCandidates(handle, candidates, defaultDurationMin);
 	const html = troubleshootHTML(handle, derived, skipped, showErrors);
 	return new Response(html, {
 	  headers: {
@@ -924,7 +931,7 @@ export default {
 
     try {
         const candidates = await collectCandidates(handle);
-	const { derived } = deriveFromCandidates(candidates, defaultDurationMin);
+	const { derived } = deriveFromCandidates(handle, candidates, defaultDurationMin);
 	const ics = buildCalendar(handle, derived);
 
         await cachePut(env, handle, "ics", ics, "text/calendar; charset=utf-8", icsTtl);

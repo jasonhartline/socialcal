@@ -2,6 +2,7 @@ name = "socialcal"
 main = "src/worker.ts"
 compatibility_date = "2026-02-20"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
 
 [vars]
 RL_CAPACITY = "60"
@@ -20,3 +21,15 @@ bindings = [
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RateLimiter"]
+
+[[routes]]
+pattern = "socialcal.org/ics*"
+zone_name = "socialcal.org"
+
+[[routes]]
+pattern = "socialcal.org/show*"
+zone_name = "socialcal.org"
+
+[[routes]]
+pattern = "socialcal.org/troubleshoot*"
+zone_name = "socialcal.org"
