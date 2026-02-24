@@ -832,6 +832,17 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
     word-break: break-word;
 background: #f7f7f7; padding: 10px; border-radius: 8px; 
   }
+  h1::before, h2::before, h3::before {
+    content: '';
+    display: inline-block;
+    height: 1em;
+    width: 1em;
+    background: url('favicon.svg') no-repeat center / contain;
+    vertical-align: baseline;
+    position: relative;
+    bottom: -0.1em;
+    margin-right: 0.3em;
+  }
 </style>
 </head>
 <body>

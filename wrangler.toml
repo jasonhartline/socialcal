@@ -3,6 +3,7 @@ main = "src/worker.ts"
 compatibility_date = "2026-02-20"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+assets = { directory = "./docs" }
 
 [vars]
 RL_CAPACITY = "60"
