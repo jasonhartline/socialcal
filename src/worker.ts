@@ -3,6 +3,9 @@
 import * as chrono from "chrono-node";
 import ical, { ICalCalendar } from "ical-generator";
 import { DateTime } from "luxon";
+import { RichText } from "@atproto/api";
+
+
 
 const BSKY_PUBLIC = "https://public.api.bsky.app/xrpc";
 
@@ -20,8 +23,6 @@ type Env = {
   ICS_TTL_SEC?: string;
   ICS_MAX_AGE_SEC?: string;
   ICS_SWR_SEC?: string;
-
-  TS_TTL_SEC?: string;
 
   DEFAULT_DURATION_MIN?: string;
 };
@@ -43,9 +44,8 @@ function cacheConfig(env: Env) {
   const icsTtl = envInt(env, "ICS_TTL_SEC", 60);
   const icsMaxAge = envInt(env, "ICS_MAX_AGE_SEC", 60);
   const icsSwr = envInt(env, "ICS_SWR_SEC", 300);
-  const tsTtl = envInt(env, "TS_TTL_SEC", 20);
   const defaultDurationMin = envInt(env, "DEFAULT_DURATION_MIN", 60);
-  return { icsTtl, icsMaxAge, icsSwr, tsTtl, defaultDurationMin };
+  return { icsTtl, icsMaxAge, icsSwr, defaultDurationMin };
 }
 
 function rateKey(handle: string): string {
@@ -266,58 +266,108 @@ function utcMidnightDate(y: number, m: number, d: number): Date {
   return new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
 }
 
-// code to pull out urls from facits and place them in text.
-type Facet = {
-  index: { byteStart: number; byteEnd: number };
-  features: Array<{ $type: string; uri?: string }>;
-};
 
-function replaceFacetLinks(text: string, facets: Facet[] | undefined): string {
-  if (!facets || facets.length === 0) return text;
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderRichText(text: string, facets: any): { text: string; html: string } {
+  const rt = new RichText({ text: text ?? "", facets });
+
+  let plain = "";
+  let html = "";
+
+  for (const seg of rt.segments()) {
+    // ---- plain text (ICS)
+    if (seg.isLink()) {
+      const uri = seg.link?.uri ?? seg.text;
+      // keep display if it's already the full uri, otherwise substitute full uri
+      plain += uri;
+    } else {
+      // mentions/tags should stay as written (@handle, #tag) in plain text
+      plain += seg.text;
+    }
+
+    // ---- html (show)
+    const label = escHtml(seg.text);
+
+    if (seg.isLink()) {
+      const href = seg.link?.uri ?? "";
+      html += `<a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    } else if (seg.isMention()) {
+      const did = seg.mention?.did ?? "";
+      const href = `https://bsky.app/profile/${did}`;
+      html += `<a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    } else if (seg.isTag()) {
+      const tag = seg.tag?.tag ?? "";
+      const href = `https://bsky.app/search?q=%23${encodeURIComponent(tag)}`;
+      html += `<a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    } else {
+      html += label;
+    }
+  }
+  
+
+  return { text: plain, html };
+}
+
+function sliceFacets(facets: any[] | undefined, startByte: number, endByte: number): any[] {
+  if (!facets) return [];
+  const out: any[] = [];
+  for (const f of facets) {
+    const s = f?.index?.byteStart;
+    const e = f?.index?.byteEnd;
+    if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
+    if (e <= startByte || s >= endByte) continue; // no overlap
+    // keep facets fully contained; drop partial overlaps for simplicity/correctness
+    if (s < startByte || e > endByte) continue;
+
+    out.push({
+      ...f,
+      index: { byteStart: s - startByte, byteEnd: e - startByte },
+    });
+  }
+  return out;
+}
+
+function extractFullEventDetailsParts(p: PostView): { when: string; title: string; detailsText: string; detailsHtml: string } | null {
+  const raw = normalizeText(String(p?.record?.text ?? ""));
+  const facets = p?.record?.facets as any[] | undefined;
+
+  // Use your existing parser to get detailsText reliably
+  const full = parseFullEventFormat(raw);
+  if (!full) return null;
+
+  // Find where details start in raw text by reproducing parseFullEventFormat's split logic
+  const parts = raw.split("\n");
+  // parts[0] is header line, parts[1] must be blank, then skip blanks
+  let i = 1;
+  while (i < parts.length && parts[i].trim() === "") i++;
+  const detailsStartLine = i;
+
+  const prefix = parts.slice(0, detailsStartLine).join("\n");
+  const prefixWithNewline = prefix.length > 0 ? prefix + "\n" : "";
 
   const enc = new TextEncoder();
   const dec = new TextDecoder("utf-8");
 
-  const bytes = enc.encode(text);
+  const rawBytes = enc.encode(raw);
 
-  // collect link replacements
-  const reps: Array<{ s: number; e: number; uri: string }> = [];
+  const startByte = enc.encode(prefixWithNewline).length;
+  const endByte = rawBytes.length;
 
-  for (const f of facets) {
-    const s = f?.index?.byteStart;
-    const e = f?.index?.byteEnd;
-    if (!Number.isFinite(s) || !Number.isFinite(e) || s < 0 || e > bytes.length || e <= s) continue;
+  const detailsBytes = rawBytes.slice(startByte, endByte);
+  const detailsSubstr = dec.decode(detailsBytes);
+  
+  const detailsFacets = sliceFacets(facets, startByte, endByte);
+  const rendered = renderRichText(detailsSubstr, detailsFacets);
 
-    // facet can have multiple features; we want the link one
-    const link = f.features?.find((x) => x?.$type === "app.bsky.richtext.facet#link" && typeof x?.uri === "string");
-    if (!link?.uri) continue;
-
-    reps.push({ s, e, uri: link.uri });
-  }
-
-  if (reps.length === 0) return text;
-
-  // Replace from right to left so byte offsets remain valid
-  reps.sort((a, b) => b.s - a.s);
-
-  let out = bytes;
-  for (const r of reps) {
-    // optional: only replace if the displayed text isn't already the full URL
-    const displayed = dec.decode(out.slice(r.s, r.e)).trim();
-    if (displayed === r.uri) continue;
-
-    const before = out.slice(0, r.s);
-    const after = out.slice(r.e);
-    const mid = enc.encode(r.uri);
-
-    const merged = new Uint8Array(before.length + mid.length + after.length);
-    merged.set(before, 0);
-    merged.set(mid, before.length);
-    merged.set(after, before.length + mid.length);
-    out = merged;
-  }
-
-  return dec.decode(out);
+  return {
+    when: full.when,
+    title: full.title,
+    detailsText: rendered.text.trim(),
+    detailsHtml: rendered.html
+  };
 }
 
 
@@ -347,10 +397,15 @@ type PostView = {
 };
 
 
-function getPostText(p: PostView): string {
+function getPostTextParts(p: PostView): { text: string; html: string } {
   const raw = normalizeText(String(p?.record?.text ?? ""));
-  const facets = p?.record?.facets as Facet[] | undefined;
-  return replaceFacetLinks(raw, facets);
+  const facets = p?.record?.facets;
+  return renderRichText(raw, facets);
+}
+
+// Keep existing callers working for now
+function getPostText(p: PostView): string {
+  return getPostTextParts(p).text;
 }
 
 
@@ -394,8 +449,28 @@ function asPostView(p: any): PostView {
 // Reply semantics (your spec)
 // =====================
 type CandidateEvent =
-  | { kind: "full"; sourceUri: string; sourceHandle?: string; whenBracket: string; title: string; details: string; referenceISO: string }
-  | { kind: "combo"; headerUri: string; detailsUri: string; sourceHandle?: string; whenBracket: string; title: string; details: string; referenceISO: string };
+  | {
+      kind: "full";
+      sourceUri: string;
+      sourceHandle?: string;
+      whenBracket: string;
+      title: string;
+      details: string;
+      detailsHtml: string;
+      referenceISO: string;
+    }
+  | {
+      kind: "combo";
+      headerUri: string;
+      detailsUri: string;
+      sourceHandle?: string;
+      whenBracket: string;
+      title: string;
+      details: string;
+      detailsHtml: string;
+      referenceISO: string;
+    };
+    
 
 function eventKey(e: CandidateEvent): string {
   return e.kind === "full" ? `full:${e.sourceUri}` : `combo:${e.headerUri}->${e.detailsUri}`;
@@ -406,7 +481,8 @@ type DerivedEvent = {
   title: string;
   when: WhenSpec;
   permalink: string | null;
-  description: string; // FINAL description used in ICS and troubleshoot
+  description: string;     // ICS
+  descriptionHtml: string; // Show
 };
 
 type DerivedSkip = {
@@ -425,15 +501,26 @@ function candidatePermalink(e: CandidateEvent): string | null {
     : toBskyPermalink(e.sourceHandle, e.detailsUri);
 }
 
-function buildEventDescription(details: string, permalink: string | null, handle: string): string {
+
+function buildEventDescriptionHtml(detailsHtml: string, handle: string): string {
+  const d = (detailsHtml ?? "").trim();
+
+  const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+  const socialcalShow = `https://socialcal.org/show?handle=${encodeURIComponent(handle)}`;
+
+  const footer = `From Bluesky <a href="${blueskyProfile}" target="_blank" rel="noopener noreferrer">@${escHtml(handle)}</a>\n` +
+                 `via SocialCal <a href="${socialcalShow}" target="_blank" rel="noopener noreferrer">${escHtml(socialcalShow)}</a>`;
+
+  return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
+}
+
+function buildEventDescription(details: string, handle: string): string {
   const d = (details ?? "").trim();
 
   const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
   const socialcalShow = `https://socialcal.org/show?handle=${encodeURIComponent(handle)}`;
 
-  const footer = permalink
-    ? `From Bluesky <${blueskyProfile}> via SocialCal <${socialcalShow}>`
-    : `via SocialCal <${socialcalShow}>`;
+  const footer = `From Bluesky ${blueskyProfile}\nvia SocialCal ${socialcalShow}`;
 
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
@@ -456,14 +543,18 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
 
     const permalink = candidatePermalink(e);
     const uid = candidateUid(e);
-    const description = buildEventDescription(e.details, permalink, handle);    
 
+    const description = buildEventDescription(e.details, handle);
+    const descriptionHtml = buildEventDescriptionHtml(e.detailsHtml, handle);
+
+    
     derived.push({
       uid,
       title: e.title,
       when,
       permalink,
       description,
+      descriptionHtml
     });
   }
 
@@ -472,26 +563,34 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
 
 
 function buildEventFromFullPost(p: PostView): CandidateEvent | null {
-  const full = parseFullEventFormat(getPostText(p));
-  if (!full) return null;
+
+  const ex = extractFullEventDetailsParts(p);
+  if (!ex) return null;
+
   return {
     kind: "full",
     sourceUri: p.uri,
     sourceHandle: p.author?.handle,
-    whenBracket: full.when,
-    title: full.title,
-    details: full.details,
+    whenBracket: ex.when,
+    title: ex.title,
+    details: ex.detailsText,
+    detailsHtml: ex.detailsHtml,
     referenceISO: getPostCreatedAt(p),
   };
+  
 }
 
 function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostView): CandidateEvent | null {
   const hdr = parseReplyHeaderFormat(getPostText(headerPost));
   if (!hdr) return null;
 
-  const details = getPostText(detailsPost).trim();
-  if (!details) return null;
 
+  const detailsParts = getPostTextParts(detailsPost);
+  const details = detailsParts.text.trim();
+  const detailsHtml = detailsParts.html.trim();
+
+  if (!details) return null;
+  
   return {
     kind: "combo",
     headerUri: headerPost.uri,
@@ -500,6 +599,7 @@ function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostV
     whenBracket: hdr.when,
     title: hdr.title,
     details,
+    detailsHtml,
     referenceISO: getPostCreatedAt(headerPost),
   };
 }
@@ -640,8 +740,8 @@ async function collectCandidates(handle: string): Promise<CandidateEvent[]> {
 // =====================
 function buildCalendar(handle: string, events: DerivedEvent[]): string {
   const cal: ICalCalendar = ical({
-    name: `SocialCalendar: ${handle}`,
-    prodId: { company: "socialcalendar.org", product: "socialcalendar", language: "EN" },
+    name: `SocialCal: @${handle}`,
+    prodId: { company: "socialcal.org", product: "socialcal", language: "EN" },
   });
   cal.ttl(60 * 60); // 1 hour
 
@@ -677,8 +777,11 @@ function buildCalendar(handle: string, events: DerivedEvent[]): string {
 }
 
 // =====================
-// Troubleshoot
+// Show / Troubleshoot
 // =====================
+
+
+
 function eventStartMillis(e: DerivedEvent): number {
   if (e.when.kind === "timed") return e.when.start.toMillis();
   return DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toMillis();
@@ -686,10 +789,6 @@ function eventStartMillis(e: DerivedEvent): number {
 
 function sortEventsByStart(events: DerivedEvent[]): DerivedEvent[] {
   return [...events].sort((a, b) => eventStartMillis(a) - eventStartMillis(b));
-}
-
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: DerivedSkip[], showErrors: boolean): string {
@@ -701,7 +800,7 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
         DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toISODate() ?? "";
       const endISO =
         DateTime.utc(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d).toISODate() ?? "";
-      return { title: e.title, allDay: true, start: startISO, end: endISO, description: e.description };
+      return { title: e.title, allDay: true, start: startISO, end: endISO, description: e.description, descriptionHtml: e.descriptionHtml };
     } else {
       return {
         title: e.title,
@@ -709,6 +808,7 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
         start: e.when.start.toISO() ?? "",
         end: e.when.end.toISO() ?? "",
         description: e.description,
+	descriptionHtml: e.descriptionHtml
       };
     }
   });
@@ -727,12 +827,16 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
   .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px 14px; background: #fff; }
   .row { display: flex; gap: 12px; flex-wrap: wrap; }
   .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #f1f1f1; }
-  pre { white-space: pre-wrap; word-break: break-word; background: #f7f7f7; padding: 10px; border-radius: 8px; }
+  .desc {
+    white-space: pre-wrap;
+    word-break: break-word;
+background: #f7f7f7; padding: 10px; border-radius: 8px; 
+  }
 </style>
 </head>
 <body>
   <h1>SocialCal</h1>
-  <div class="muted"><a href="${profileUrl}">@${esc(handle)}</a></div>
+  <div class="muted"><a href="${profileUrl}">@${escHtml(handle)}</a></div>
 
   ${showErrors && skipped.length > 0 ? `
   <div class="grid" style="margin-top: 16px;">
@@ -740,8 +844,8 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
       <div style="margin-bottom: 8px;"><b>Errors</b></div>
       ${skipped.map(s => `
         <div style="margin: 10px 0;">
-          <div class="muted"><code>${esc(s.sourceUri)}</code></div>
-          <div><b>Reason:</b> ${esc(s.reason)}</div>
+          <div class="muted"><code>${escHtml(s.sourceUri)}</code></div>
+          <div><b>Reason:</b> ${escHtml(s.reason)}</div>
         </div>
       `).join("")}
     </div>
@@ -752,18 +856,18 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
     ${eventCards.length === 0 ? `<div class="muted">No events parsed from recent #socialcal items.</div>` : eventCards.map(e => `
       <div class="card">
         <div class="row" style="justify-content: space-between; align-items: baseline;">
-          <div><b>${esc(e.title)}</b></div>
+          <div><b>${escHtml(e.title)}</b></div>
           <div class="pill">${e.allDay ? "all-day" : "timed"}</div>
         </div>
 
         <div class="muted time"
              data-allday="${e.allDay ? "true" : "false"}"
-             data-start="${esc(e.start)}"
-             data-end="${esc(e.end)}">
+             data-start="${escHtml(e.start)}"
+             data-end="${escHtml(e.end)}">
         </div>
 
-        <div style="margin-top:10px;"><b>Description:</b></div>
-        <pre>${esc(e.description)}</pre>
+    <div style="margin-top:10px;"><b>Description:</b></div>
+    <div class="desc">${e.descriptionHtml}</div>
       </div>
     `).join("")}
   </div>
@@ -855,7 +959,7 @@ async function checkRateLimit(env: Env, handle: string): Promise<{ ok: true } | 
   return { ok: true };
 }
 
-async function cacheGet(env: Env, handle: string, kind: "ics" | "show"): Promise<{ hit: false } | { hit: true; body: string; contentType: string }> {
+async function cacheGet(env: Env, handle: string, kind: "ics"): Promise<{ hit: false } | { hit: true; body: string; contentType: string }> {
   const id = env.RATE_LIMITER.idFromName(rateKey(handle));
   const stub = env.RATE_LIMITER.get(id);
   const res = await doFetchJson(stub, "cache/get", { handle: rateKey(handle), kind });
@@ -865,7 +969,7 @@ async function cacheGet(env: Env, handle: string, kind: "ics" | "show"): Promise
   return { hit: true, body: String(data.body), contentType: String(data.contentType) };
 }
 
-async function cachePut(env: Env, handle: string, kind: "ics" | "ts", body: string, contentType: string, ttlSec: number): Promise<void> {
+async function cachePut(env: Env, handle: string, kind: "ics", body: string, contentType: string, ttlSec: number): Promise<void> {
   const id = env.RATE_LIMITER.idFromName(rateKey(handle));
   const stub = env.RATE_LIMITER.get(id);
   await doFetchJson(stub, "cache/put", { handle: rateKey(handle), kind, body, contentType, ttlSec });
@@ -896,7 +1000,7 @@ export default {
       });
     }
 
-    const { icsTtl, icsMaxAge, icsSwr, tsTtl, defaultDurationMin } = cacheConfig(env);
+    const { icsTtl, icsMaxAge, icsSwr, defaultDurationMin } = cacheConfig(env);
 
 
     if (url.pathname === "/show") {
@@ -1003,7 +1107,7 @@ export class RateLimiter implements DurableObject {
 
     if (path === "cache/get") {
       const kind = String(body.kind ?? "");
-      if (kind !== "ics" && kind !== "ts") return new Response("Bad kind", { status: 400 });
+      if (kind !== "ics") return new Response("Bad kind", { status: 400 });
 
       const key = `cache:${handle}:${kind}`;
       const entry = await this.state.storage.get<any>(key);
@@ -1020,7 +1124,7 @@ export class RateLimiter implements DurableObject {
 
     if (path === "cache/put") {
       const kind = String(body.kind ?? "");
-      if (kind !== "ics" && kind !== "ts") return new Response("Bad kind", { status: 400 });
+      if (kind !== "ics") return new Response("Bad kind", { status: 400 });
 
       const ttlSec = Number.isFinite(body.ttlSec) ? Math.max(1, Number(body.ttlSec)) : 60;
       const entry = {
