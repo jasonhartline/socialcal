@@ -725,7 +725,7 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
 </head>
 <body>
   <h1>SocialCal</h1>
-  <div class="muted"><a href="https://bsky.app/profile/${profileUrl}">@${esc(handle)}</a></div>
+  <div class="muted"><a href="${profileUrl}">@${esc(handle)}</a></div>
 
   ${showErrors && skipped.length > 0 ? `
   <div class="grid" style="margin-top: 16px;">
@@ -762,7 +762,7 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
   </div>
 
   <div class="muted" style="margin-top:24px;">
-    Events from <a href="https://bsky.app/profile/${profileUrl}">Bluesky</a> via <a href="https://socialcal.org/">SocialCal</a>.
+    Events from <a href="${profileUrl}">Bluesky</a> via <a href="https://socialcal.org/">SocialCal</a>.
   </div>
 
 <script>
