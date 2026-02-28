@@ -75,10 +75,63 @@ function isHashtagOnly(text: string): boolean {
 }
 
 function parseBracketHeaderLine(line: string): { bracket: string; titleRemainder: string } | null {
-  const m = line.match(/^\s*\[(.+?)\]\s+(.+?)\s*$/);
+  // Allow "[...]" optionally followed by whitespace + title text (possibly empty)
+  const m = line.match(/^\s*\[(.+?)\]\s*(.*?)\s*$/);
   if (!m) return null;
-  return { bracket: m[1].trim(), titleRemainder: m[2].trim() };
+  return { bracket: m[1].trim(), titleRemainder: (m[2] ?? "").trim() };
 }
+
+const DEFAULT_TITLE = "SocialCal Event (Unnamed)";
+
+function titleOrDefault(
+  parsedTitle: string,
+  postUri: string,
+  permalink: string | null,
+  role: Attribution["role"],
+  whenBracket: string
+): { title: string; warning?: Diagnostic } {
+  const t = (parsedTitle ?? "").trim();
+  if (t.length > 0) return { title: t };
+
+  const at: Attribution = {
+    postUri,
+    permalink,
+    role,
+    snippetText: `[${whenBracket}]`,         // show the header context we had
+    snippetHtml: escHtml(`[${whenBracket}]`),
+  };
+
+  return {
+    title: DEFAULT_TITLE,
+    warning: {
+      severity: "warning",
+      code: "TITLE_MISSING",
+      message: "Missing title after the bracket; using a default title.",
+      at,
+    },
+  };
+}
+
+function descriptionMissingWarning(
+  postUri: string,
+  permalink: string | null,
+  role: Attribution["role"],
+  snippetText: string
+): Diagnostic {
+  return {
+    severity: "warning",
+    code: "DESCRIPTION_MISSING",
+    message: "No details were provided; showing footer only.",
+    at: {
+      postUri,
+      permalink,
+      role,
+      snippetText,
+      snippetHtml: escHtml(snippetText),
+    },
+  };
+}
+
 
 function parseFullEventFormat(text: string): { when: string; title: string; details: string } | null {
   const t = normalizeText(text);
@@ -261,15 +314,199 @@ function parseWhenSpec(bracket: string, referenceISO: string, defaultDurationMin
   return { kind: "timed", start: startZ, end: endZ };
 }
 
+type WhenParseResult =
+  | { when: WhenSpec; error?: undefined }
+  | { when: null; error: Diagnostic };
+
+function parseWhenSpecResult(
+  bracket: string,
+  titleForContext: string,
+  referenceISO: string,
+  defaultDurationMin: number,
+  postUri: string,
+  permalink: string | null,
+  role: Attribution["role"]
+): WhenParseResult {
+  const raw = bracket.trim();
+  const tokens = raw.split(/\s+/);
+  const last = tokens[tokens.length - 1] ?? "";
+
+  const reference = new Date(referenceISO);
+  const results = chrono.parse(raw, reference, { forwardDate: true });
+  if (!results?.length) {
+    return {
+      when: null,
+      error: {
+        severity: "error",
+        code: "WHEN_UNPARSABLE",
+        message: "Could not parse the date/time in the bracket.",
+        at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext),
+      },
+    };
+  }
+
+  // Determine whether chrono thinks a time exists
+  const r0 = results[0];
+  const s = r0.start;
+  const startHasHour = s.isCertain("hour") || s.isCertain("minute");
+
+  // ALL-DAY: defer to your existing parseWhenSpec (it doesn’t require TZ)
+  if (!startHasHour) {
+    const w = parseWhenSpec(bracket, referenceISO, defaultDurationMin);
+    if (w) return { when: w };
+    return {
+      when: null,
+      error: {
+        severity: "error",
+        code: "WHEN_UNPARSABLE",
+        message: "Could not parse the all-day date range.",
+        at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext),
+      },
+    };
+  }
+
+  // TIMED: require TZ token
+  const tz = parseTimezoneTokenDetailed(bracket);
+  if (!tz.ok) {
+    if (tz.kind === "missing") {
+      return {
+        when: null,
+        error: {
+          severity: "error",
+          code: "WHEN_MISSING_TIMEZONE",
+          message:
+            "Timed events must include a timezone at the end of the bracket (e.g., 'PT', 'ET', 'America/Chicago', 'Z', or '+01:00').",
+          at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext),
+        },
+      };
+    }
+    if (tz.kind === "unsupported") {
+      return {
+        when: null,
+        error: {
+          severity: "error",
+          code: "WHEN_UNSUPPORTED_TIMEZONE",
+          message:
+            `Unsupported timezone '${tz.tzToken}'. Supported: ET/CT/MT/PT, IANA zones like 'America/Chicago', 'Z', or offsets like '+01:00'.`,
+          at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext, tz.tzToken),
+        },
+      };
+    }
+    // malformed
+    return {
+      when: null,
+      error: {
+        severity: "error",
+        code: "WHEN_INVALID_TIMEZONE",
+        message: `Malformed timezone token '${tz.tzToken}'.`,
+        at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext, tz.tzToken),
+      },
+    };
+  }
+
+  // Now run the existing full parser (which uses applyZone etc.)
+  const w = parseWhenSpec(bracket, referenceISO, defaultDurationMin);
+  if (!w) {
+    return {
+      when: null,
+      error: {
+        severity: "error",
+        code: "WHEN_INVALID_TIMEZONE",
+        message:
+          `Could not interpret timezone '${tz.tzToken}' for this date/time.`,
+        at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext, tz.tzToken),
+      },
+    };
+  }
+
+  return { when: w };
+}
+
+function looksLikeTimezoneToken(tok: string): boolean {
+  if (!tok) return false;
+  if (US_TZ_MAP[tok]) return true;
+  if (tok === "Z") return true;
+  if (/^[+-]\d{2}:\d{2}$/.test(tok)) return true;
+  if (/^[A-Za-z]+\/[A-Za-z_]+$/.test(tok)) return true;      // IANA-ish
+  if (/^[A-Za-z]{2,5}$/.test(tok)) return true;              // e.g. PST/EST/UTC
+  return false;
+}
+
+type TzParseOk = { ok: true; expr: string; zone: string; tzToken: string };
+type TzParseErr =
+  | { ok: false; kind: "missing" }
+  | { ok: false; kind: "unsupported"; tzToken: string }
+  | { ok: false; kind: "malformed"; tzToken: string };
+
+function parseTimezoneTokenDetailed(bracket: string): TzParseOk | TzParseErr {
+  const raw = bracket.trim();
+  const tokens = raw.split(/\s+/);
+  if (tokens.length < 2) {
+    // might still be missing tz (e.g. "March 10 10am")
+    return { ok: false, kind: "missing" };
+  }
+
+  const tzToken = tokens[tokens.length - 1];
+  const expr = tokens.slice(0, -1).join(" ").trim();
+  if (!expr) return { ok: false, kind: "malformed", tzToken };
+
+  // If last token doesn't even look like TZ, treat as missing (timed rule)
+  if (!looksLikeTimezoneToken(tzToken)) return { ok: false, kind: "missing" };
+
+  // Supported short forms
+  if (US_TZ_MAP[tzToken]) return { ok: true, expr, zone: US_TZ_MAP[tzToken], tzToken };
+
+  // Supported IANA
+  if (/^[A-Za-z]+\/[A-Za-z_]+$/.test(tzToken)) return { ok: true, expr, zone: tzToken, tzToken };
+
+  // Supported Z / offsets
+  if (tzToken === "Z") return { ok: true, expr, zone: "UTC", tzToken };
+  if (/^[+-]\d{2}:\d{2}$/.test(tzToken)) return { ok: true, expr, zone: `OFFSET${tzToken}`, tzToken };
+
+  // Looks like TZ but not supported
+  return { ok: false, kind: "unsupported", tzToken };
+}
+
+
+function headerSnippetText(whenBracket: string, title: string): string {
+  const t = (title ?? "").trim();
+  return t ? `[${whenBracket}] ${t}` : `[${whenBracket}]`;
+}
+
+function makeWhenAttribution(
+  postUri: string,
+  permalink: string | null,
+  role: Attribution["role"],
+  whenBracket: string,
+  title: string,
+  highlightToken?: string
+): Attribution {
+  const snippetText = headerSnippetText(whenBracket, title);
+  // For now, snippetHtml is just escaped text. Later we can upgrade to facet-aware.
+  const snippetHtml = escHtml(snippetText);
+
+  let highlight: Highlight | undefined;
+  if (highlightToken) {
+    const idx = snippetText.lastIndexOf(highlightToken);
+    if (idx >= 0) highlight = { kind: "char", start: idx, end: idx + highlightToken.length };
+  }
+
+  return { postUri, permalink, role, snippetText, snippetHtml, highlight };
+}
+
 // For all-day, build UTC-midnight JS Dates
 function utcMidnightDate(y: number, m: number, d: number): Date {
   return new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
 }
 
-
 function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return (s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
+
 
 function renderRichText(text: string, facets: any): { text: string; html: string } {
   const rt = new RichText({ text: text ?? "", facets });
@@ -448,47 +685,77 @@ function asPostView(p: any): PostView {
 // =====================
 // Reply semantics (your spec)
 // =====================
-type CandidateEvent =
-  | {
-      kind: "full";
-      sourceUri: string;
-      sourceHandle?: string;
-      whenBracket: string;
-      title: string;
-      details: string;
-      detailsHtml: string;
-      referenceISO: string;
-    }
-  | {
-      kind: "combo";
-      headerUri: string;
-      detailsUri: string;
-      sourceHandle?: string;
-      whenBracket: string;
-      title: string;
-      details: string;
-      detailsHtml: string;
-      referenceISO: string;
-    };
+type CandidateEvent = | {
+  kind: "full";
+  sourceUri: string;
+  sourceHandle?: string;
+    whenBracket: string;
+  title: string;
+  details: string;
+  detailsHtml: string;
+  referenceISO: string;
+  sources: SourcePost[];
+} | {
+  kind: "combo";
+  headerUri: string;
+  detailsUri: string;
+  sourceHandle?: string;
+  whenBracket: string;
+  title: string;
+  details: string;
+  detailsHtml: string;
+  referenceISO: string;
+  sources: SourcePost[];
+};
     
 
 function eventKey(e: CandidateEvent): string {
   return e.kind === "full" ? `full:${e.sourceUri}` : `combo:${e.headerUri}->${e.detailsUri}`;
 }
 
+
+type Highlight = { kind: "char"; start: number; end: number };
+
+type Attribution = {
+  postUri: string;          // at://...
+  permalink: string | null; // bsky.app link
+  role: "full" | "reply-header" | "reply-parent" | "unknown";
+  snippetText: string;      // facet-rendered plain text snippet
+  snippetHtml: string;      // facet-rendered html snippet
+  highlight?: Highlight;    // optional [start,end) into snippetText/snippetHtml (char-based)
+};
+
+type Diagnostic = {
+  severity: "error" | "warning";
+  code: string;
+  message: string;
+  at?: Attribution;
+};
+
+type SourcePost = {
+  role: "full" | "reply-header" | "reply-parent" | "thread";
+  uri: string;                 // at://...
+  permalink: string | null;    // bsky.app link (if we can make one)
+  authorHandle: string | null; // for display
+  createdAt: string | null;    // optional
+  text: string;                // facet-canonical plain
+  html: string;                // facet-canonical html
+};
+
 type DerivedEvent = {
   uid: string;
   title: string;
-  when: WhenSpec;
+  when: WhenSpec | null; 
   permalink: string | null;
-  description: string;     // ICS
-  descriptionHtml: string; // Show
+  description: string;
+  descriptionHtml: string;
+
+  sources: SourcePost[];
+  errors: Diagnostic[];
+  warnings: Diagnostic[];
 };
 
-type DerivedSkip = {
-  sourceUri: string;
-  reason: string;
-};
+
 
 function candidateUid(e: CandidateEvent): string {
   if (e.kind === "full") return e.sourceUri;
@@ -525,45 +792,74 @@ function buildEventDescription(details: string, handle: string): string {
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
 
+function sourceFromPost(p: PostView, role: SourcePost["role"]): SourcePost {
+  const parts = getPostTextParts(p); // your facet-based render
+  return {
+    role,
+    uri: p.uri,
+    permalink: toBskyPermalink(p.author?.handle, p.uri),
+    authorHandle: p.author?.handle ?? null,
+    createdAt: String(p?.record?.createdAt ?? p?.indexedAt ?? "") || null,
+    text: parts.text,
+    html: parts.html,
+  };
+}
 
-function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultDurationMin: number): { derived: DerivedEvent[]; skipped: DerivedSkip[] } {
+function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultDurationMin: number): { derived: DerivedEvent[] } {
 
   const derived: DerivedEvent[] = [];
-  const skipped: DerivedSkip[] = [];
 
   for (const e of events) {
-    const when = parseWhenSpec(e.whenBracket, e.referenceISO, defaultDurationMin);
-    if (!when) {
-      skipped.push({
-        sourceUri: e.kind === "full" ? e.sourceUri : e.headerUri,
-        reason: "Could not parse date/time (timed events require a supported timezone).",
-      });
-      continue;
-    }
 
     const permalink = candidatePermalink(e);
     const uid = candidateUid(e);
 
-    const description = buildEventDescription(e.details, handle);
-    const descriptionHtml = buildEventDescriptionHtml(e.detailsHtml, handle);
+    // choose the post URI to attribute the when parse to
+    const postUri = e.kind === "full" ? e.sourceUri : e.headerUri;
+    const role: Attribution["role"] = e.kind === "full" ? "full" : "reply-header";
 
+    // check title
+    const tRes = titleOrDefault(e.title, postUri, permalink, role, e.whenBracket);
+    const titleWarnings = tRes.warning ? [tRes.warning] : [];
+
+
+    // check description
+    const detailsMissing = (e.details ?? "").trim() === "";
+    const descWarnings = detailsMissing
+	  ? [descriptionMissingWarning(detailsPostUri, permalink, detailsRole, "")]
+	  : [];
+    
+    // check when
+    const wr = parseWhenSpecResult(
+      e.whenBracket,
+      tRes.title,
+      e.referenceISO,
+      defaultDurationMin,
+      postUri,
+      permalink,
+      role
+    );
+    const whenErrors = (wr.error) ? [wr.error] : [];
     
     derived.push({
       uid,
-      title: e.title,
-      when,
+      title: tRes.title,
+      when: wr.when,
       permalink,
-      description,
-      descriptionHtml
+      description: buildEventDescription(e.details, handle),
+      descriptionHtml: buildEventDescriptionHtml(e.detailsHtml, handle),
+      errors: whenErrors,
+      warnings: [...titleWarnings, ...descWarnings],
+      sources: e.sources
     });
+    
   }
 
-  return { derived, skipped };
+  return { derived };
 }
 
 
 function buildEventFromFullPost(p: PostView): CandidateEvent | null {
-
   const ex = extractFullEventDetailsParts(p);
   if (!ex) return null;
 
@@ -572,13 +868,14 @@ function buildEventFromFullPost(p: PostView): CandidateEvent | null {
     sourceUri: p.uri,
     sourceHandle: p.author?.handle,
     whenBracket: ex.when,
-    title: ex.title,
+    title: ex.title,              // may now be empty
     details: ex.detailsText,
     detailsHtml: ex.detailsHtml,
     referenceISO: getPostCreatedAt(p),
+    sources: [sourceFromPost(p, "full")],
   };
-  
 }
+
 
 function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostView): CandidateEvent | null {
   const hdr = parseReplyHeaderFormat(getPostText(headerPost));
@@ -601,6 +898,10 @@ function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostV
     details,
     detailsHtml,
     referenceISO: getPostCreatedAt(headerPost),
+    sources: [
+      sourceFromPost(detailsPost, "reply-parent"),
+      sourceFromPost(headerPost, "reply-header"),
+  ],
   };
 }
 
@@ -748,6 +1049,9 @@ function buildCalendar(handle: string, events: DerivedEvent[]): string {
 
 
   for (const e of events) {
+    if (e.errors.length > 0) continue; // don't add error events.
+    if (!e.when) continue;             // skip invalid events. (should not get here)
+
     if (e.when.kind === "allday") {
       const start = utcMidnightDate(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d);
       const end = utcMidnightDate(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d);
@@ -781,37 +1085,67 @@ function buildCalendar(handle: string, events: DerivedEvent[]): string {
 // =====================
 
 
-
-function eventStartMillis(e: DerivedEvent): number {
-  if (e.when.kind === "timed") return e.when.start.toMillis();
-  return DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toMillis();
+function eventSortKey(e: DerivedEvent): { hasError: number; hasWhen: number; t: number } {
+  const hasError = (e.errors?.length ?? 0) > 0 ? 0 : 1;   // 0 first
+  const hasWhen = e.when ? 1 : 0;                         // 0 (null) first
+  const t =
+    e.when?.kind === "timed"
+      ? e.when.start.toMillis()
+      : e.when?.kind === "allday"
+        ? DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toMillis()
+        : 0; // null when => tie-breaker at top of error section
+  return { hasError, hasWhen, t };
 }
 
-function sortEventsByStart(events: DerivedEvent[]): DerivedEvent[] {
-  return [...events].sort((a, b) => eventStartMillis(a) - eventStartMillis(b));
-}
-
-function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: DerivedSkip[], showErrors: boolean): string {
-  const profileUrl = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
-  const sorted = sortEventsByStart(events);
-  const eventCards = sorted.map((e) => {
-    if (e.when.kind === "allday") {
-      const startISO =
-        DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toISODate() ?? "";
-      const endISO =
-        DateTime.utc(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d).toISODate() ?? "";
-      return { title: e.title, allDay: true, start: startISO, end: endISO, description: e.description, descriptionHtml: e.descriptionHtml };
-    } else {
-      return {
-        title: e.title,
-        allDay: false,
-        start: e.when.start.toISO() ?? "",
-        end: e.when.end.toISO() ?? "",
-        description: e.description,
-	descriptionHtml: e.descriptionHtml
-      };
-    }
+function sortEventsForShow(events: DerivedEvent[]): DerivedEvent[] {
+  return [...events].sort((a, b) => {
+    const A = eventSortKey(a), B = eventSortKey(b);
+    if (A.hasError !== B.hasError) return A.hasError - B.hasError;
+    if (A.hasWhen !== B.hasWhen) return A.hasWhen - B.hasWhen;
+    return A.t - B.t;
   });
+}
+
+
+function troubleshootHTML(handle: string, events: DerivedEvent[], showErrors: boolean): string {
+  const profileUrl = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+  
+  const sorted = showErrors ? sortEventsForShow(events) : sortEventsForShow(events.filter(e => !!e.when && (e.errors?.length ?? 0) === 0));
+ 
+  const eventCards = sorted.map((e) => {     
+    let card = {
+      title: e.title,
+      timeKind: "error",
+      start: "", 
+      end: "", 
+      description: e.description,
+      descriptionHtml: e.descriptionHtml,
+      errors: e.errors ?? [],
+      warnings: e.warnings ?? [],
+      attributions: [
+	...(e.errors ?? []).map(d => d.at).filter(Boolean),
+	...(e.warnings ?? []).map(d => d.at).filter(Boolean),
+      ] as Attribution[],
+      sources: e.sources ?? [],
+    };
+    
+    if (!e.when) { return card; }
+
+    card.timeKind = e.when.kind;
+    
+    if (card.timeKind === "allday") {
+      card.start = DateTime.utc(e.when.startDate.y, e.when.startDate.m, e.when.startDate.d).toISODate() ?? "";
+      card.end = DateTime.utc(e.when.endDateExclusive.y, e.when.endDateExclusive.m, e.when.endDateExclusive.d).toISODate() ?? "";
+      return card;
+    }
+    
+    card.start = e.when.start.toISO() ?? "";
+    card.end =  e.when.end.toISO() ?? "";
+    
+    return card;
+      
+  });
+
 
   return `<!doctype html>
 <html>
@@ -825,6 +1159,10 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
   .muted { color: #555; }
   .grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin: 16px 0; }
   .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px 14px; background: #fff; }
+  .card.error {
+    border-color: #f2b8b5;
+    background: #fff5f5;
+  }
   .row { display: flex; gap: 12px; flex-wrap: wrap; }
   .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #f1f1f1; }
   .desc {
@@ -832,6 +1170,18 @@ function troubleshootHTML(handle: string, events: DerivedEvent[], skipped: Deriv
     word-break: break-word;
 background: #f7f7f7; padding: 10px; border-radius: 8px; 
   }
+.context-header {
+  margin-bottom: 4px;
+}
+
+  .postlist { display: grid; gap: 8px; }
+  .postcard { border: 1px solid #e6e6e6; border-radius: 12px; padding: 10px 12px; background: #fff; }
+  .posthdr { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; margin-bottom: 6px; }
+  .postrole { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #f1f1f1; }
+  .postmeta { font-size: 13px; color: #555; }
+  .postbody { line-height: 1.35; }
+  .postbody a { text-decoration: none; }
+  .postbody a:hover { text-decoration: underline; }
   h1::before, h2::before, h3::before {
     content: '';
     display: inline-block;
@@ -843,40 +1193,107 @@ background: #f7f7f7; padding: 10px; border-radius: 8px;
     bottom: -0.1em;
     margin-right: 0.3em;
   }
+.diagnostics {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+  .diag-header {
+    font-weight: 600;
+    margin-top: 4px;
+  }
+
+  .error-header { color: #842029; }
+  .warning-header { color: #664d03; }
+
+  .diag { padding: 8px 10px; border-radius: 8px; }
+
+  .diag-error { background: #f8d7da; color: #842029; }
+  .diag-warning { background: #fff3cd; color: #664d03; }
+
+  .contextbox {
+    margin-top: 6px;
+    padding: 10px;
+    border-radius: 12px;
+    background: #f7f7f7;
+    border: 1px solid #e6e6e6;
+  }
+
+  .context-header {
+    color: #444;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
 </style>
 </head>
 <body>
   <h1>SocialCal</h1>
   <div class="muted"><a href="${profileUrl}">@${escHtml(handle)}</a></div>
 
-  ${showErrors && skipped.length > 0 ? `
-  <div class="grid" style="margin-top: 16px;">
-    <div class="card">
-      <div style="margin-bottom: 8px;"><b>Errors</b></div>
-      ${skipped.map(s => `
-        <div style="margin: 10px 0;">
-          <div class="muted"><code>${escHtml(s.sourceUri)}</code></div>
-          <div><b>Reason:</b> ${escHtml(s.reason)}</div>
-        </div>
-      `).join("")}
-    </div>
-  </div>
-` : ""}
+
+
 
   <div class="grid">
     ${eventCards.length === 0 ? `<div class="muted">No events parsed from recent #socialcal items.</div>` : eventCards.map(e => `
-      <div class="card">
+      <div class="card ${e.errors.length ? "error" : ""}">
         <div class="row" style="justify-content: space-between; align-items: baseline;">
           <div><b>${escHtml(e.title)}</b></div>
-          <div class="pill">${e.allDay ? "all-day" : "timed"}</div>
+          <div class="pill">${e.timeKind}</div>
         </div>
 
-        <div class="muted time"
-             data-allday="${e.allDay ? "true" : "false"}"
-             data-start="${escHtml(e.start)}"
-             data-end="${escHtml(e.end)}">
-        </div>
+  <div class="muted time"
+     ${e.timeKind !== "error" ? `
+       data-allday="${e.timeKind === "allday" ? "true" : "false"}"
+       data-start="${escHtml(e.start)}"
+       data-end="${escHtml(e.end)}"
+     ` : ""}>
+    ${e.timeKind === "error" ? "Could not parse date/time" : ""}
+  </div>
 
+  ${showErrors && (e.errors.length || e.warnings.length) ? `
+  <div class="diagnostics">
+
+    ${e.errors.length ? `
+    <div class="diag-header error-header">Error:</div>
+      ${e.errors.map(err => `
+        <div class="diag diag-error">
+          ${escHtml(err.message)}
+        </div>
+      `).join("")}
+    ` : ""}
+
+    ${e.warnings.length ? `
+    <div class="diag-header warning-header">Warning:</div>
+      ${e.warnings.map(warn => `
+        <div class="diag diag-warning">
+          ${escHtml(warn.message)}
+        </div>
+      `).join("")}
+    ` : ""}
+
+  <div class="context-header">
+    Relevant post${(e.sources?.length ?? 0) > 1 ? "s" : ""}:
+  </div>
+
+    <div class="postlist">
+      ${(e.sources ?? []).map(p => `
+        <div class="postcard">
+          <div class="posthdr">
+            <div class="postmeta">
+              <b>${escHtml(p.authorHandle ?? "unknown")}</b>
+              ${p.permalink ? ` · <a href="${escHtml(p.permalink)}" target="_blank" rel="noopener noreferrer">View on Bluesky</a>` : ``}
+            </div>
+            <div class="postrole">${escHtml(p.role)}</div>
+          </div>
+          <div class="postbody">${p.html}</div>
+        </div>
+      `).join("")}
+    </div>
+
+  </div>
+` : ""}
+  
+  
     <div style="margin-top:10px;"><b>Description:</b></div>
     <div class="desc">${e.descriptionHtml}</div>
       </div>
@@ -923,8 +1340,7 @@ background: #f7f7f7; padding: 10px; border-radius: 8px;
     const start = s ? new Date(s) : null;
     const end = e ? new Date(e) : null;
     if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) {
-      el.textContent = "";
-      continue;
+      continue; // keep any server-provided message (e.g., parse error)
     }
 
     if (sameDay(start, end)) {
@@ -1018,8 +1434,8 @@ export default {
       const showErrors = url.searchParams.get("errors") === "true";
       try {
 	const candidates = await collectCandidates(handle);
-	const { derived, skipped } = deriveFromCandidates(handle, candidates, defaultDurationMin);
-	const html = troubleshootHTML(handle, derived, skipped, showErrors);
+	const { derived } = deriveFromCandidates(handle, candidates, defaultDurationMin);
+	const html = troubleshootHTML(handle, derived, showErrors);
 	return new Response(html, {
 	  headers: {
             "Content-Type": "text/html; charset=utf-8",
