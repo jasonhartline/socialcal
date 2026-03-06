@@ -697,7 +697,7 @@ type CandidateEvent = | {
   sources: SourcePost[];
 } | {
   kind: "combo";
-  headerUri: string;
+  sourceUri: string;
   detailsUri: string;
   sourceHandle?: string;
   whenBracket: string;
@@ -710,7 +710,7 @@ type CandidateEvent = | {
     
 
 function eventKey(e: CandidateEvent): string {
-  return e.kind === "full" ? `full:${e.sourceUri}` : `combo:${e.headerUri}->${e.detailsUri}`;
+  return e.kind === "full" ? `full:${e.sourceUri}` : `combo:${e.sourceUri}->${e.detailsUri}`;
 }
 
 
@@ -763,31 +763,35 @@ function candidateUid(e: CandidateEvent): string {
 }
 
 function candidatePermalink(e: CandidateEvent): string | null {
-  return e.kind === "full"
-    ? toBskyPermalink(e.sourceHandle, e.sourceUri)
-    : toBskyPermalink(e.sourceHandle, e.detailsUri);
+  return toBskyPermalink(e.sourceHandle, e.sourceUri);
+}
+
+function handleFromPermalink(url: string): string | null {
+  const m = url.match(/\/profile\/([^/]+)\/post\//);
+  return m ? m[1] : null;
 }
 
 
-function buildEventDescriptionHtml(detailsHtml: string, handle: string): string {
+function buildEventDescriptionHtml(detailsHtml: string, permalink: string, handle: string): string {
   const d = (detailsHtml ?? "").trim();
 
-  const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+  //  const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+  const postHandle = handleFromPermalink(permalink);
   const socialcalShow = `https://socialcal.org/show?handle=${encodeURIComponent(handle)}`;
 
-  const footer = `From Bluesky <a href="${blueskyProfile}" target="_blank" rel="noopener noreferrer">@${escHtml(handle)}</a>\n` +
+  const footer = `From Bluesky <a href="${escHtml(permalink)}" target="_blank" rel="noopener noreferrer">@${escHtml(postHandle || "unknown")}</a>\n` +
                  `via SocialCal <a href="${socialcalShow}" target="_blank" rel="noopener noreferrer">${escHtml(socialcalShow)}</a>`;
 
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
 
-function buildEventDescription(details: string, handle: string): string {
+function buildEventDescription(details: string, permalink: string, handle: string): string {
   const d = (details ?? "").trim();
 
-  const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+//  const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
   const socialcalShow = `https://socialcal.org/show?handle=${encodeURIComponent(handle)}`;
 
-  const footer = `From Bluesky ${blueskyProfile}\nvia SocialCal ${socialcalShow}`;
+  const footer = `From Bluesky ${escHtml(permalink)}\nvia SocialCal ${socialcalShow}`;
 
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
@@ -815,11 +819,10 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
     const uid = candidateUid(e);
 
     // choose the post URI to attribute the when parse to
-    const postUri = e.kind === "full" ? e.sourceUri : e.headerUri;
     const role: Attribution["role"] = e.kind === "full" ? "full" : "reply-header";
 
     // check title
-    const tRes = titleOrDefault(e.title, postUri, permalink, role, e.whenBracket);
+    const tRes = titleOrDefault(e.title, e.sourceUri, permalink, role, e.whenBracket);
     const titleWarnings = tRes.warning ? [tRes.warning] : [];
 
 
@@ -835,7 +838,7 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
       tRes.title,
       e.referenceISO,
       defaultDurationMin,
-      postUri,
+      e.sourceUri,
       permalink,
       role
     );
@@ -846,8 +849,8 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
       title: tRes.title,
       when: wr.when,
       permalink,
-      description: buildEventDescription(e.details, handle),
-      descriptionHtml: buildEventDescriptionHtml(e.detailsHtml, handle),
+      description: buildEventDescription(e.details, permalink, handle),
+      descriptionHtml: buildEventDescriptionHtml(e.detailsHtml, permalink, handle),
       errors: whenErrors,
       warnings: [...titleWarnings, ...descWarnings],
       sources: e.sources
@@ -890,7 +893,7 @@ function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostV
   
   return {
     kind: "combo",
-    headerUri: headerPost.uri,
+    sourceUri: headerPost.uri,
     detailsUri: detailsPost.uri,
     sourceHandle: headerPost.author?.handle,
     whenBracket: hdr.when,
