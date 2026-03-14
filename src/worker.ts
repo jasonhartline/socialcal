@@ -8,7 +8,7 @@ import { RichText } from "@atproto/api";
 
 
 const BSKY_PUBLIC = "https://public.api.bsky.app/xrpc";
-
+const DEFAULT_RELATIVE_TZ = "America/Los_Angeles";
 
 // =====================
 // Env + config knobs
@@ -213,110 +213,80 @@ function addDaysUTC(y: number, m: number, d: number, days: number): { y: number;
   return { y: dt.year, m: dt.month, d: dt.day };
 }
 
-// Parse bracket into either:
-// - timed event with start/end DateTime (timezone required)
-// - all-day single/multi-day with DTSTART/DTEND (timezone optional / ignored)
-function parseWhenSpec(bracket: string, referenceISO: string, defaultDurationMin: number): WhenSpec | null {
-  const raw = bracket.trim();
 
-  // If the last token looks like a timezone, we’ll strip it; otherwise TZ is absent.
-  const tokens = raw.split(/\s+/);
-  const last = tokens[tokens.length - 1] ?? "";
-  const tzParsed = parseTimezoneToken(raw); // uses existing logic: requires TZ token at end
-  const hasExplicitTZ = tzParsed !== null;
 
-  // For parsing the human time expression, we want just the “expr” part when TZ exists.
-  const expr = hasExplicitTZ ? tzParsed!.expr : raw;
+// relative time helpers
+function chronoReferenceStartOfDayInZone(referenceISO: string, zone: string): Date {
+  const ref = DateTime.fromISO(referenceISO, { zone: "utc" });
+  if (!ref.isValid) return new Date(referenceISO);
 
-  const reference = new Date(referenceISO);
-  const results = chrono.parse(expr, reference, { forwardDate: true });
-  if (!results?.length) return null;
+  if (zone.startsWith("OFFSET")) {
+    const m = zone.match(/^OFFSET([+-])(\d{2}):(\d{2})$/);
+    if (!m) return new Date(referenceISO);
 
-  const r = results[0];
-  const s = r.start;
+    const sign = m[1] === "-" ? -1 : 1;
+    const minutes = sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
 
-  const startHasHour = s.isCertain("hour") || s.isCertain("minute");
+    return ref
+      .plus({ minutes })
+      .startOf("day")
+      .minus({ minutes })
+      .toJSDate();
+  }
 
-  // ---- ALL-DAY: no time present
-  if (!startHasHour) {
-    const sy = s.get("year"), sm = s.get("month"), sd = s.get("day");
+  const z = ref.setZone(zone);
+  if (!z.isValid) return new Date(referenceISO);
+  return z.startOf("day").toJSDate();
+}
 
-    // Multi-day all-day if chrono provided an end date
-    if (r.end) {
-      const e = r.end;
-      const ey = e.get("year"), em = e.get("month"), ed = e.get("day");
+function looksRelativeDateExpr(expr: string): boolean {
+  const s = expr.trim().toLowerCase();
 
-      // User intent is inclusive, ICS DTEND is exclusive => add 1 day to end date
-      const endExclusive = addDaysUTC(ey, em, ed, 1);
-      return {
-        kind: "allday",
-        startDate: { y: sy, m: sm, d: sd },
-        endDateExclusive: endExclusive,
-      };
-    }
+  if (/\b(today|tomorrow|tonight|this\s+\w+|next\s+\w+)\b/.test(s)) return true;
 
-    // Single-day all-day => DTEND is next day
-    const endExclusive = addDaysUTC(sy, sm, sd, 1);
+  if (/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(s)) return true;
+  if (/\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/.test(s)) return true;
+
+  return false;
+}
+
+function chooseChronoReference(
+  bracket: string,
+  referenceISO: string
+): { expr: string; zoneForTimed: string | null; reference: Date } {
+  const tz = parseTimezoneToken(bracket);
+
+  if (tz) {
     return {
-      kind: "allday",
-      startDate: { y: sy, m: sm, d: sd },
-      endDateExclusive: endExclusive,
+      expr: tz.expr,
+      zoneForTimed: tz.zone,
+      reference: chronoReferenceStartOfDayInZone(referenceISO, tz.zone),
     };
   }
 
-  // ---- TIMED: time present => TZ required
-  if (!hasExplicitTZ) return null;
+  const expr = bracket.trim();
 
-  // Build start DateTime (local clock time) then apply tz -> DateTime
-  const sh = s.get("hour");
-  const smin = s.isCertain("minute") ? s.get("minute") : 0;
-  const ss = s.isCertain("second") ? s.get("second") : 0;
-
-  const sBase = DateTime.fromObject(
-    { year: s.get("year"), month: s.get("month"), day: s.get("day"), hour: sh, minute: smin, second: ss },
-    { zone: "UTC" }
-  );
-  const startZ = applyZone(sBase, tzParsed!.zone);
-  if (!startZ || !startZ.isValid) return null;
-
-  // End time:
-  // - If chrono returns an end (e.g., "9am-5pm"), use it.
-  // - Otherwise use default duration.
-  let endZ: DateTime;
-
-  if (r.end) {
-    const e = r.end;
-
-    const eh = e.isCertain("hour") ? e.get("hour") : sh;
-    const emin = e.isCertain("minute") ? e.get("minute") : 0;
-    const esec = e.isCertain("second") ? e.get("second") : 0;
-
-    // Inherit start date unless end explicitly specifies a date
-    const ey = e.isCertain("year") ? e.get("year") : s.get("year");
-    const em = e.isCertain("month") ? e.get("month") : s.get("month");
-    const ed = e.isCertain("day") ? e.get("day") : s.get("day");
-
-    const eBase = DateTime.fromObject(
-      { year: ey, month: em, day: ed, hour: eh, minute: emin, second: esec },
-      { zone: "UTC" }
-    );
-    const ez = applyZone(eBase, tzParsed!.zone);
-    if (!ez || !ez.isValid) return null;
-    endZ = ez;
-  } else {
-    endZ = startZ.plus({ minutes: defaultDurationMin });
+  if (looksRelativeDateExpr(expr)) {
+    return {
+      expr,
+      zoneForTimed: null,
+      reference: chronoReferenceStartOfDayInZone(referenceISO, DEFAULT_RELATIVE_TZ),
+    };
   }
-  
 
-  // Guard: if user wrote a backwards range, still keep something sensible
-  if (endZ <= startZ) endZ = startZ.plus({ minutes: defaultDurationMin });
-
-  return { kind: "timed", start: startZ, end: endZ };
+  return {
+    expr,
+    zoneForTimed: null,
+    reference: new Date(referenceISO),
+  };
 }
+
+
 
 type WhenParseResult =
   | { when: WhenSpec; error?: undefined }
   | { when: null; error: Diagnostic };
+
 
 function parseWhenSpecResult(
   bracket: string,
@@ -328,11 +298,12 @@ function parseWhenSpecResult(
   role: Attribution["role"]
 ): WhenParseResult {
   const raw = bracket.trim();
-  const tokens = raw.split(/\s+/);
-  const last = tokens[tokens.length - 1] ?? "";
 
-  const reference = new Date(referenceISO);
-  const results = chrono.parse(raw, reference, { forwardDate: true });
+  const chosen = chooseChronoReference(raw, referenceISO);
+  const expr = chosen.expr;
+  const reference = chosen.reference;
+
+  const results = chrono.parse(expr, reference, { forwardDate: true });
   if (!results?.length) {
     return {
       when: null,
@@ -345,27 +316,41 @@ function parseWhenSpecResult(
     };
   }
 
-  // Determine whether chrono thinks a time exists
-  const r0 = results[0];
-  const s = r0.start;
+  const r = results[0];
+  const s = r.start;
   const startHasHour = s.isCertain("hour") || s.isCertain("minute");
 
-  // ALL-DAY: defer to your existing parseWhenSpec (it doesn’t require TZ)
+  // ---- ALL-DAY
   if (!startHasHour) {
-    const w = parseWhenSpec(bracket, referenceISO, defaultDurationMin);
-    if (w) return { when: w };
+    const sy = s.get("year");
+    const sm = s.get("month");
+    const sd = s.get("day");
+
+    if (r.end) {
+      const e = r.end;
+      const ey = e.get("year");
+      const em = e.get("month");
+      const ed = e.get("day");
+
+      return {
+        when: {
+          kind: "allday",
+          startDate: { y: sy, m: sm, d: sd },
+          endDateExclusive: addDaysUTC(ey, em, ed, 1),
+        },
+      };
+    }
+
     return {
-      when: null,
-      error: {
-        severity: "error",
-        code: "WHEN_UNPARSABLE",
-        message: "Could not parse the all-day date range.",
-        at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext),
+      when: {
+        kind: "allday",
+        startDate: { y: sy, m: sm, d: sd },
+        endDateExclusive: addDaysUTC(sy, sm, sd, 1),
       },
     };
   }
 
-  // TIMED: require TZ token
+  // ---- TIMED: timezone always required
   const tz = parseTimezoneTokenDetailed(bracket);
   if (!tz.ok) {
     if (tz.kind === "missing") {
@@ -380,6 +365,7 @@ function parseWhenSpecResult(
         },
       };
     }
+
     if (tz.kind === "unsupported") {
       return {
         when: null,
@@ -392,7 +378,7 @@ function parseWhenSpecResult(
         },
       };
     }
-    // malformed
+
     return {
       when: null,
       error: {
@@ -404,23 +390,91 @@ function parseWhenSpecResult(
     };
   }
 
-  // Now run the existing full parser (which uses applyZone etc.)
-  const w = parseWhenSpec(bracket, referenceISO, defaultDurationMin);
-  if (!w) {
+  const sh = s.get("hour");
+  const smin = s.isCertain("minute") ? s.get("minute") : 0;
+  const ss = s.isCertain("second") ? s.get("second") : 0;
+
+  const sBase = DateTime.fromObject(
+    {
+      year: s.get("year"),
+      month: s.get("month"),
+      day: s.get("day"),
+      hour: sh,
+      minute: smin,
+      second: ss,
+    },
+    { zone: "UTC" }
+  );
+
+  const startZ = applyZone(sBase, tz.zone);
+  if (!startZ || !startZ.isValid) {
     return {
       when: null,
       error: {
         severity: "error",
         code: "WHEN_INVALID_TIMEZONE",
-        message:
-          `Could not interpret timezone '${tz.tzToken}' for this date/time.`,
+        message: `Could not interpret timezone '${tz.tzToken}' for this date/time.`,
         at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext, tz.tzToken),
       },
     };
   }
 
-  return { when: w };
+  let endZ: DateTime;
+
+  if (r.end) {
+    const e = r.end;
+
+    const eh = e.isCertain("hour") ? e.get("hour") : sh;
+    const emin = e.isCertain("minute") ? e.get("minute") : 0;
+    const esec = e.isCertain("second") ? e.get("second") : 0;
+
+    const ey = e.isCertain("year") ? e.get("year") : s.get("year");
+    const em = e.isCertain("month") ? e.get("month") : s.get("month");
+    const ed = e.isCertain("day") ? e.get("day") : s.get("day");
+
+    const eBase = DateTime.fromObject(
+      {
+        year: ey,
+        month: em,
+        day: ed,
+        hour: eh,
+        minute: emin,
+        second: esec,
+      },
+      { zone: "UTC" }
+    );
+
+    const ez = applyZone(eBase, tz.zone);
+    if (!ez || !ez.isValid) {
+      return {
+        when: null,
+        error: {
+          severity: "error",
+          code: "WHEN_INVALID_TIMEZONE",
+          message: `Could not interpret timezone '${tz.tzToken}' for this date/time.`,
+          at: makeWhenAttribution(postUri, permalink, role, bracket, titleForContext, tz.tzToken),
+        },
+      };
+    }
+
+    endZ = ez;
+  } else {
+    endZ = startZ.plus({ minutes: defaultDurationMin });
+  }
+
+  if (endZ <= startZ) {
+    endZ = startZ.plus({ minutes: defaultDurationMin });
+  }
+
+  return {
+    when: {
+      kind: "timed",
+      start: startZ,
+      end: endZ,
+    },
+  };
 }
+
 
 function looksLikeTimezoneToken(tok: string): boolean {
   if (!tok) return false;

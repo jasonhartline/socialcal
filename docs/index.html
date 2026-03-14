@@ -178,6 +178,12 @@ Date-only events become all-day calendar entries.
 Date ranges are interpreted as inclusive (March 5–10 includes both March 5 and March 10).
 </p>
 
+<p>
+Relative dates such as <code>[today]</code>, <code>[tomorrow]</code>, or
+<code>[Wednesday]</code> are supported for all-day events.
+When no timezone is specified, relative dates are interpreted using the post time in the <strong>Pacific Time (PT)</strong> zone.  For example <code>[Wednesday]</code> is the next Wednesday that is either today or in the future from the perspective of someone posting now but in Pacific Time.
+</p>
+
     <h2>Using Reposts to Add Events</h2>
 
     <p>If you repost a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
@@ -231,7 +237,8 @@ Room 240. #socialcal</code></pre>
     <ul>
       <li><code>#socialcal</code> is missing (except when a reply with <code>#socialcal</code> triggers inclusion via the reply rules)</li>
       <li>Date/time is missing</li>
-      <li>Timezone is missing or invalid</li>
+      <li>A timed event is missing a timezone</li>
+      <li>The timezone is invalid</li>
       <li>The required formatting is malformed</li>
       <li>The referenced parent post is unavailable</li>
     </ul>
