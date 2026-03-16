@@ -112,6 +112,14 @@
     <p>To include parsing errors in the report:</p>
     <pre><code>https://socialcal.org/show?handle=&lt;your-handle&gt;&amp;errors=true</code></pre>
 
+    <p>By default, <code>/show</code> hides older events using your browser’s local timezone.</p>
+<ul>
+  <li>Timed events remain visible until 12 hours after they end.</li>
+  <li>All-day events remain visible through their day.</li>
+</ul>
+<p>To show all parsed events, including older ones, use:</p>
+<pre><code>https://socialcal.org/show?handle=&lt;your-handle&gt;&amp;all=true</code></pre>
+    
     <p>
     For example, <a href="https://bsky.app/profile/jasonhartline.bsky.social">@jasonhartline.bsky.social</a> would use troubleshooting URL <a href="https://socialcal.org/show?handle=jasonhartline.bsky.social&errors=true"><code>https://socialcal.org/show?handle=jasonhartline.bsky.social&errors=true</code></a>.  If there are no errors, then none are shown.</p>
     

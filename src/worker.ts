@@ -1164,11 +1164,17 @@ function sortEventsForShow(events: DerivedEvent[]): DerivedEvent[] {
 }
 
 
-function troubleshootHTML(handle: string, events: DerivedEvent[], showErrors: boolean): string {
+function troubleshootHTML(handle: string, events: DerivedEvent[], showAll: boolean, showErrors: boolean): string {
   const profileUrl = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
+
+  const baseShowUrl = `/show?handle=${encodeURIComponent(handle)}`;
+  const upcomingUrl = showErrors ? `${baseShowUrl}&errors=true` : baseShowUrl;
+  const allUrl = showErrors ? `${baseShowUrl}&all=true&errors=true` : `${baseShowUrl}&all=true`;
+
+  const sorted = showErrors
+	? sortEventsForShow(events)
+	: sortEventsForShow(events.filter(e => (e.errors?.length ?? 0) === 0));
   
-  const sorted = showErrors ? sortEventsForShow(events) : sortEventsForShow(events.filter(e => !!e.when && (e.errors?.length ?? 0) === 0));
- 
   const eventCards = sorted.map((e) => {     
     let card = {
       title: e.title,
@@ -1286,13 +1292,22 @@ background: #f7f7f7; padding: 10px; border-radius: 8px;
 <body>
   <h1>SocialCal</h1>
   <div class="muted"><a href="${profileUrl}">@${escHtml(handle)}</a></div>
-
+<div class="muted" style="margin-top:6px;">
+  ${showAll
+    ? `<a href="${upcomingUrl}">Today onward</a> · <b>All posts</b>`
+    : `<b>Today onward</b> · <a href="${allUrl}">All posts</a>`}
+</div>
 
 
 
   <div class="grid">
     ${eventCards.length === 0 ? `<div class="muted">No events parsed from recent #socialcal items.</div>` : eventCards.map(e => `
-      <div class="card ${e.errors.length ? "error" : ""}">
+    <div class="card ${e.errors.length ? "error" : ""}"
+      data-event-card="true"
+      data-has-errors="${e.errors.length ? "true" : "false"}"
+      data-time-kind="${escHtml(e.timeKind)}"
+      data-start="${escHtml(e.start)}"
+      data-end="${escHtml(e.end)}" >
         <div class="row" style="justify-content: space-between; align-items: baseline;">
           <div><b>${escHtml(e.title)}</b></div>
           <div class="pill">${e.timeKind}</div>
@@ -1362,6 +1377,9 @@ background: #f7f7f7; padding: 10px; border-radius: 8px;
   </div>
 
 <script>
+const SOCIALCAL_SHOW_ALL = ${showAll ? "true" : "false"};
+</script>
+<script>
 (function () {
   const fmtDate = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" });
   const fmtTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
@@ -1370,19 +1388,54 @@ background: #f7f7f7; padding: 10px; border-radius: 8px;
     return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
   }
 
+  function startOfTodayLocal() {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+
+  function twelveHoursAgo() {
+    return new Date(Date.now() - 12 * 60 * 60 * 1000);
+  }
+
+  function isVisibleCard(card) {
+    if (SOCIALCAL_SHOW_ALL) return true;
+
+    const hasErrors = card.dataset.hasErrors === "true";
+    if (hasErrors) return true;
+
+    const kind = card.dataset.timeKind || "";
+    const start = card.dataset.start || "";
+    const end = card.dataset.end || "";
+
+    if (kind === "timed") {
+      const endDt = end ? new Date(end) : null;
+      if (!endDt || isNaN(endDt.getTime())) return true;
+      return endDt >= twelveHoursAgo();
+    }
+
+    if (kind === "allday") {
+      // end is exclusive YYYY-MM-DD
+      const [ey, em, ed] = end.split("-").map(Number);
+      if (!ey || !em || !ed) return true;
+      const endExclusive = new Date(ey, em - 1, ed);
+      return endExclusive > startOfTodayLocal();
+    }
+
+    return true;
+  }
+
   for (const el of document.querySelectorAll(".time")) {
     const allDay = el.dataset.allday === "true";
     const s = el.dataset.start || "";
     const e = el.dataset.end || "";
 
     if (allDay) {
-      // Expect YYYY-MM-DD strings (end is exclusive)
       const [sy, sm, sd] = s.split("-").map(Number);
       const [ey, em, ed] = e.split("-").map(Number);
       if (!sy || !sm || !sd || !ey || !em || !ed) { el.textContent = ""; continue; }
 
-      const start = new Date(sy, sm - 1, sd);   // local date, no TZ shift
-      const endEx = new Date(ey, em - 1, ed);   // local exclusive end
+      const start = new Date(sy, sm - 1, sd);
+      const endEx = new Date(ey, em - 1, ed);
       const endInclusive = new Date(endEx);
       endInclusive.setDate(endInclusive.getDate() - 1);
 
@@ -1393,11 +1446,10 @@ background: #f7f7f7; padding: 10px; border-radius: 8px;
       continue;
     }
 
-    // Timed: expect ISO timestamps
     const start = s ? new Date(s) : null;
     const end = e ? new Date(e) : null;
     if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) {
-      continue; // keep any server-provided message (e.g., parse error)
+      continue;
     }
 
     if (sameDay(start, end)) {
@@ -1407,6 +1459,12 @@ background: #f7f7f7; padding: 10px; border-radius: 8px;
         fmtDate.format(start) + " " + fmtTime.format(start) +
         " – " +
         fmtDate.format(end) + " " + fmtTime.format(end);
+    }
+  }
+
+  for (const card of document.querySelectorAll('[data-event-card="true"]')) {
+    if (!isVisibleCard(card)) {
+      card.style.display = "none";
     }
   }
 })();
@@ -1489,10 +1547,11 @@ export default {
 
     if (url.pathname === "/show") {
       const showErrors = url.searchParams.get("errors") === "true";
+      const showAll = url.searchParams.get("all") === "true";
       try {
 	const candidates = await collectCandidates(handle);
 	const { derived } = deriveFromCandidates(handle, candidates, defaultDurationMin);
-	const html = troubleshootHTML(handle, derived, showErrors);
+	const html = troubleshootHTML(handle, derived, showAll, showErrors);
 	return new Response(html, {
 	  headers: {
             "Content-Type": "text/html; charset=utf-8",
