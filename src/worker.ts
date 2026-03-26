@@ -621,6 +621,8 @@ function sliceFacets(facets: any[] | undefined, startByte: number, endByte: numb
   return out;
 }
 
+
+
 function extractFullEventDetailsParts(p: PostView): { when: string; title: string; detailsText: string; detailsHtml: string } | null {
   const raw = normalizeText(String(p?.record?.text ?? ""));
   const facets = p?.record?.facets as any[] | undefined;
@@ -687,6 +689,13 @@ type PostView = {
   indexedAt?: string;
 };
 
+function requireHandle(p: PostView): string {
+  const h = p.author?.handle;
+  if (!h) {
+    throw new Error(`Missing handle for post ${p.uri}`);
+  }
+  return h;
+}
 
 function getPostTextParts(p: PostView): { text: string; html: string } {
   const raw = normalizeText(String(p?.record?.text ?? ""));
@@ -708,11 +717,11 @@ function isRepostItem(item: any): boolean {
   return item?.reason?.$type === "app.bsky.feed.defs#reasonRepost";
 }
 
-function toBskyPermalink(handle: string | undefined, uri: string): string | null {
+function toBskyPermalink(handle: string, uri: string): string | null {
   const m = uri.match(/\/app\.bsky\.feed\.post\/([^/]+)$/);
   if (!m) return null;
   const rkey = m[1];
-  if (!handle) return `https://bsky.app/post/${rkey}`;
+  if (!handle) return null;
   return `https://bsky.app/profile/${handle}/post/${rkey}`;
 }
 
@@ -812,8 +821,7 @@ type DerivedEvent = {
 
 
 function candidateUid(e: CandidateEvent): string {
-  if (e.kind === "full") return e.sourceUri;
-  return e.detailsUri; // canonical for combo
+  return e.sourceUri;
 }
 
 function candidatePermalink(e: CandidateEvent): string | null {
@@ -845,7 +853,7 @@ function buildEventDescription(details: string, permalink: string, handle: strin
 //  const blueskyProfile = `https://bsky.app/profile/${encodeURIComponent(handle)}`;
   const socialcalShow = `https://socialcal.org/show?handle=${encodeURIComponent(handle)}`;
 
-  const footer = `From Bluesky ${escHtml(permalink)}\nvia SocialCal ${socialcalShow}`;
+  const footer = `From Bluesky ${permalink}\nvia SocialCal ${socialcalShow}`;
 
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
@@ -855,7 +863,7 @@ function sourceFromPost(p: PostView, role: SourcePost["role"]): SourcePost {
   return {
     role,
     uri: p.uri,
-    permalink: toBskyPermalink(p.author?.handle, p.uri),
+    permalink: toBskyPermalink(requireHandle(p), p.uri),
     authorHandle: p.author?.handle ?? null,
     createdAt: String(p?.record?.createdAt ?? p?.indexedAt ?? "") || null,
     text: parts.text,
@@ -882,9 +890,13 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
 
     // check description
     const detailsMissing = (e.details ?? "").trim() === "";
+    const detailsPostUri = e.kind === "full" ? e.sourceUri : e.detailsUri;
+    const detailsRole: Attribution["role"] = e.kind === "full" ? "full" : "reply-parent";
+
     const descWarnings = detailsMissing
 	  ? [descriptionMissingWarning(detailsPostUri, permalink, detailsRole, "")]
 	  : [];
+
     
     // check when
     const wr = parseWhenSpecResult(
@@ -923,7 +935,7 @@ function buildEventFromFullPost(p: PostView): CandidateEvent | null {
   return {
     kind: "full",
     sourceUri: p.uri,
-    sourceHandle: p.author?.handle,
+    sourceHandle: requireHandle(p),
     whenBracket: ex.when,
     title: ex.title,              // may now be empty
     details: ex.detailsText,
@@ -943,8 +955,6 @@ function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostV
   const details = detailsParts.text.trim();
   const detailsHtml = detailsParts.html.trim();
 
-  if (!details) return null;
-  
   return {
     kind: "combo",
     sourceUri: headerPost.uri,
