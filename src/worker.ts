@@ -983,41 +983,50 @@ function firstNonTrivialDetailsPost(ancestors: PostView[]): PostView | null {
   return null;
 }
 
-async function deriveReplyTriggeredEvents(replyPost: PostView, parentHeight = 20): Promise<CandidateEvent[]> {
-  const replyText = getPostText(replyPost);
-  if (!hasSocialcal(replyText)) return []; // required by your rule
+async function deriveHeaderTriggeredEvents(post: PostView, parentHeight = 20): Promise<CandidateEvent[]> {
+  const postText = getPostText(post);
+  if (!hasSocialcal(postText)) return [];
 
-  const chainRaw = await fetchThreadAncestors(replyPost.uri, parentHeight);
+  const quoteUri = getQuotedPostUri(post);
+  if (quoteUri) {
+    const quoted = await fetchPostByUri(quoteUri);
+    if (quoted) {
+      const full = buildEventFromFullPost(quoted);
+      if (full) return [full];
+
+      const combo = buildEventFromHeaderAndDetails(post, quoted);
+      if (combo) return [combo];
+    }
+  }
+
+  const isReply = !!post?.record?.reply?.parent?.uri;
+  if (!isReply) return [];
+
+  const chainRaw = await fetchThreadAncestors(post.uri, parentHeight);
   const chain = chainRaw.map(asPostView);
   if (chain.length < 2) return [];
 
   const reply = chain[0];
   const parent = chain[1];
 
-  // Case 1: parent is already a full event
   const parentFull = buildEventFromFullPost(parent);
   if (parentFull) return [parentFull];
 
-  // Case 2: parent not full; reply supplies header -> parent supplies details
   const combo = buildEventFromHeaderAndDetails(reply, parent);
   if (combo) return [combo];
 
-  // Case 3: hashtag-only reply binds prior header/full with details
-  if (isHashtagOnly(replyText)) {
-    // If any ancestor is full event, take nearest
+  if (isHashtagOnly(postText)) {
     for (let i = 1; i < chain.length; i++) {
       const full = buildEventFromFullPost(chain[i]);
       if (full) return [full];
     }
 
-    // Else: find a header-format ancestor and its replied-to post
     for (let i = 1; i < chain.length - 1; i++) {
       if (!parseReplyHeaderFormat(getPostText(chain[i]))) continue;
       const evt = buildEventFromHeaderAndDetails(chain[i], chain[i + 1]);
       if (evt) return [evt];
     }
 
-    // Fallback: nearest header anywhere + first non-trivial details
     const anyHeader = chain.find((p, idx) => idx >= 1 && !!parseReplyHeaderFormat(getPostText(p)));
     const details = firstNonTrivialDetailsPost(chain);
     if (anyHeader && details) {
@@ -1029,9 +1038,105 @@ async function deriveReplyTriggeredEvents(replyPost: PostView, parentHeight = 20
   return [];
 }
 
+
+function getQuotedPostUri(p: PostView): string | null {
+  const embed = p?.record?.embed;
+  
+  if (!embed || typeof embed !== "object") return null;
+
+  if (embed.$type === "app.bsky.embed.record") {
+    const uri = embed.record?.uri;
+    return typeof uri === "string" && /\/app\.bsky\.feed\.post\//.test(uri) ? uri : null;
+  }
+
+  if (embed.$type === "app.bsky.embed.recordWithMedia") {
+    const uri = embed.record?.record?.uri;
+    return typeof uri === "string" && /\/app\.bsky\.feed\.post\//.test(uri) ? uri : null;
+  }
+
+  return null;
+}
+
+async function fetchPostByUri(uri: string): Promise<PostView | null> {
+  const data = await bskyGet("app.bsky.feed.getPosts", { uris: uri });
+  const posts = Array.isArray(data?.posts) ? data.posts : [];
+  return posts.length > 0 ? asPostView(posts[0]) : null;
+}
+
+async function findTarget(post: PostView): Promise<PostView | null> {
+  // 1. quoted post first
+  const quotedUri = getQuotedPostUri(post);
+  if (quotedUri) {
+    const quoted = await fetchPostByUri(quotedUri);
+    if (quoted) return quoted;
+  }
+
+  // 2. then reply parent
+  const parentUri = post?.record?.reply?.parent?.uri;
+  if (typeof parentUri === "string" && parentUri.length > 0) {
+    const chainRaw = await fetchThreadAncestors(post.uri, 2);
+    const chain = chainRaw.map(asPostView);
+    if (chain.length >= 2) return chain[1];
+  }
+
+  return null;
+}
+
+async function collectCandidateFromPost(
+  post: PostView,
+  seenEventKeys: Set<string>,
+  maxDepth = 10
+): Promise<CandidateEvent | null> {
+  if (maxDepth < 0) return null;
+
+  const txt = getPostText(post);
+
+  // 1. full event
+  const full = buildEventFromFullPost(post);
+  if (full) {
+    const k = eventKey(full);
+    if (!seenEventKeys.has(k)) {
+      seenEventKeys.add(k);
+      return full;
+    }
+  }
+
+  // 2. header event
+  const header = parseReplyHeaderFormat(txt);
+  if (header) {
+    const target = await findTarget(post);
+    if (!target) return null;
+
+    const evt = buildEventFromHeaderAndDetails(post, target);
+    if (evt) {
+      const k = eventKey(evt);
+      if (!seenEventKeys.has(k)) {
+        seenEventKeys.add(k);
+        return evt;
+      }
+    }
+  }
+
+  // 3. hashtag-only → recurse
+  if (hasSocialcal(txt)) {
+    const target = await findTarget(post);
+    if (!target) return null;
+
+    const nested = await collectCandidateFromPost(
+      target,
+      seenEventKeys,
+      maxDepth - 1
+    );
+    return nested;
+  }
+
+  return null;
+}
+
 // =====================
 // Collect candidates
 // =====================
+
 async function collectCandidates(handle: string): Promise<CandidateEvent[]> {
   const candidates: CandidateEvent[] = [];
   const seen = new Set<string>();
@@ -1058,43 +1163,11 @@ async function collectCandidates(handle: string): Promise<CandidateEvent[]> {
       const post: PostView = item?.post;
       if (!post?.uri || !post?.record) continue;
 
-      const txt = getPostText(post);
+      const candidate = await collectCandidateFromPost(
+	post,
+	seen)
 
-      // Reposts: include reposted content if it is a full event post
-      if (isRepostItem(item)) {
-        const full = buildEventFromFullPost(post);
-        if (full) {
-          const k = eventKey(full);
-          if (!seen.has(k)) {
-            seen.add(k);
-            candidates.push(full);
-          }
-        }
-        continue;
-      }
-
-      // Posts (including replies) by handle: can be full events themselves
-      const full = buildEventFromFullPost(post);
-      if (full) {
-        const k = eventKey(full);
-        if (!seen.has(k)) {
-          seen.add(k);
-          candidates.push(full);
-        }
-      }
-
-      // Reply-triggered inclusion (only if this post is a reply and contains #socialcal)
-      const isReply = !!post?.record?.reply?.parent?.uri;
-      if (isReply && hasSocialcal(txt)) {
-        const derived = await deriveReplyTriggeredEvents(post);
-        for (const e of derived) {
-          const k = eventKey(e);
-          if (!seen.has(k)) {
-            seen.add(k);
-            candidates.push(e);
-          }
-        }
-      }
+      if (candidate) candidates.push(candidate);
     }
 
     if (!cursor) break;
