@@ -713,9 +713,6 @@ function getPostCreatedAt(p: PostView): string {
   return String(p?.record?.createdAt ?? p?.indexedAt ?? new Date().toISOString());
 }
 
-function isRepostItem(item: any): boolean {
-  return item?.reason?.$type === "app.bsky.feed.defs#reasonRepost";
-}
 
 function toBskyPermalink(handle: string, uri: string): string | null {
   const m = uri.match(/\/app\.bsky\.feed\.post\/([^/]+)$/);
@@ -725,21 +722,33 @@ function toBskyPermalink(handle: string, uri: string): string | null {
   return `https://bsky.app/profile/${handle}/post/${rkey}`;
 }
 
+const threadCache = new Map<string, Promise<any[]>>();
+
 async function fetchThreadAncestors(replyUri: string, parentHeight = 20): Promise<any[]> {
-  const data = await bskyGet("app.bsky.feed.getPostThread", {
-    uri: replyUri,
-    depth: 0,
-    parentHeight,
-  });
-  const chain: any[] = [];
-  let node = data?.thread;
-  if (!node || !node.post) return chain;
-  while (node && node.post) {
-    chain.push(node.post);
-    node = node.parent;
+  const key = `${replyUri}::${parentHeight}`;
+
+  if (!threadCache.has(key)) {
+    threadCache.set(key, (async () => {
+      const data = await bskyGet("app.bsky.feed.getPostThread", {
+        uri: replyUri,
+        depth: 0,
+        parentHeight,
+      });
+      const chain: any[] = [];
+      let node = data?.thread;
+      if (!node || !node.post) return chain;
+      while (node && node.post) {
+        chain.push(node.post);
+        node = node.parent;
+      }
+      return chain; // [reply, parent, grandparent, ...]
+    })());
   }
-  return chain; // [reply, parent, grandparent, ...]
+
+  return threadCache.get(key)!;
 }
+
+
 
 function asPostView(p: any): PostView {
   return p as PostView;
@@ -751,7 +760,7 @@ function asPostView(p: any): PostView {
 type CandidateEvent = | {
   kind: "full";
   sourceUri: string;
-  sourceHandle?: string;
+  sourceHandle: string;
     whenBracket: string;
   title: string;
   details: string;
@@ -762,7 +771,7 @@ type CandidateEvent = | {
   kind: "combo";
   sourceUri: string;
   detailsUri: string;
-  sourceHandle?: string;
+  sourceHandle: string;
   whenBracket: string;
   title: string;
   details: string;
@@ -824,8 +833,12 @@ function candidateUid(e: CandidateEvent): string {
   return e.sourceUri;
 }
 
-function candidatePermalink(e: CandidateEvent): string | null {
-  return toBskyPermalink(e.sourceHandle, e.sourceUri);
+function candidatePermalink(e: CandidateEvent): string {
+  const url = toBskyPermalink(e.sourceHandle, e.sourceUri);
+  if (!url) {
+    throw new Error(`Failed to build permalink for ${e.sourceUri}`);
+  }
+  return url;
 }
 
 function handleFromPermalink(url: string): string | null {
@@ -893,10 +906,17 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
     const detailsPostUri = e.kind === "full" ? e.sourceUri : e.detailsUri;
     const detailsRole: Attribution["role"] = e.kind === "full" ? "full" : "reply-parent";
 
-    const descWarnings = detailsMissing
-	  ? [descriptionMissingWarning(detailsPostUri, permalink, detailsRole, "")]
-	  : [];
+    const detailsSource =
+	  e.kind === "full"
+	  ? e.sources.find(s => s.role === "full")
+	  : e.sources.find(s => s.role === "reply-parent");
 
+    const descSnippet = (detailsSource?.text ?? "").trim();
+    
+    const descWarnings = detailsMissing
+	  ? [descriptionMissingWarning(detailsPostUri, permalink, detailsRole, descSnippet)]
+	  : [];
+    
     
     // check when
     const wr = parseWhenSpecResult(
@@ -972,71 +992,7 @@ function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostV
   };
 }
 
-function firstNonTrivialDetailsPost(ancestors: PostView[]): PostView | null {
-  for (let i = 1; i < ancestors.length; i++) {
-    const txt = getPostText(ancestors[i]).trim();
-    if (!txt) continue;
-    if (isHashtagOnly(txt)) continue;
-    if (parseReplyHeaderFormat(txt)) continue;
-    return ancestors[i];
-  }
-  return null;
-}
 
-async function deriveHeaderTriggeredEvents(post: PostView, parentHeight = 20): Promise<CandidateEvent[]> {
-  const postText = getPostText(post);
-  if (!hasSocialcal(postText)) return [];
-
-  const quoteUri = getQuotedPostUri(post);
-  if (quoteUri) {
-    const quoted = await fetchPostByUri(quoteUri);
-    if (quoted) {
-      const full = buildEventFromFullPost(quoted);
-      if (full) return [full];
-
-      const combo = buildEventFromHeaderAndDetails(post, quoted);
-      if (combo) return [combo];
-    }
-  }
-
-  const isReply = !!post?.record?.reply?.parent?.uri;
-  if (!isReply) return [];
-
-  const chainRaw = await fetchThreadAncestors(post.uri, parentHeight);
-  const chain = chainRaw.map(asPostView);
-  if (chain.length < 2) return [];
-
-  const reply = chain[0];
-  const parent = chain[1];
-
-  const parentFull = buildEventFromFullPost(parent);
-  if (parentFull) return [parentFull];
-
-  const combo = buildEventFromHeaderAndDetails(reply, parent);
-  if (combo) return [combo];
-
-  if (isHashtagOnly(postText)) {
-    for (let i = 1; i < chain.length; i++) {
-      const full = buildEventFromFullPost(chain[i]);
-      if (full) return [full];
-    }
-
-    for (let i = 1; i < chain.length - 1; i++) {
-      if (!parseReplyHeaderFormat(getPostText(chain[i]))) continue;
-      const evt = buildEventFromHeaderAndDetails(chain[i], chain[i + 1]);
-      if (evt) return [evt];
-    }
-
-    const anyHeader = chain.find((p, idx) => idx >= 1 && !!parseReplyHeaderFormat(getPostText(p)));
-    const details = firstNonTrivialDetailsPost(chain);
-    if (anyHeader && details) {
-      const evt = buildEventFromHeaderAndDetails(anyHeader, details);
-      if (evt) return [evt];
-    }
-  }
-
-  return [];
-}
 
 
 function getQuotedPostUri(p: PostView): string | null {
@@ -1057,10 +1013,17 @@ function getQuotedPostUri(p: PostView): string | null {
   return null;
 }
 
+const postCache = new Map<string, Promise<PostView | null>>();
+
 async function fetchPostByUri(uri: string): Promise<PostView | null> {
-  const data = await bskyGet("app.bsky.feed.getPosts", { uris: uri });
-  const posts = Array.isArray(data?.posts) ? data.posts : [];
-  return posts.length > 0 ? asPostView(posts[0]) : null;
+  if (!postCache.has(uri)) {
+    postCache.set(uri, (async () => {
+      const data = await bskyGet("app.bsky.feed.getPosts", { uris: uri });
+      const posts = Array.isArray(data?.posts) ? data.posts : [];
+      return posts.length > 0 ? asPostView(posts[0]) : null;
+    })());
+  }
+  return postCache.get(uri)!;
 }
 
 async function findTarget(post: PostView): Promise<PostView | null> {
