@@ -208,6 +208,17 @@ When no timezone is specified, relative dates are interpreted using the post tim
 
     <p>If you repost a post containing <code>#socialcal</code> and valid event formatting, that post becomes an event on your calendar.</p>
 
+    <h2>Adding atmo.rsvp Events</h2>
+    <p>SocialCal can add public <a href="https://atmo.rsvp">atmo.rsvp</a> events without requiring an atmo.rsvp login.</p>
+
+    <p>If a Bluesky post contains both an atmo.rsvp event link and <code>#socialcal</code>, repost it to add that event to your calendar.</p>
+
+    <pre><code>https://atmo.rsvp/p/&lt;actor&gt;/e/&lt;event&gt; #socialcal</code></pre>
+
+    <p>If the post with the atmo.rsvp link does not contain <code>#socialcal</code>, reply to it or quote-post it with <code>#socialcal</code>.</p>
+
+    <p>The atmo.rsvp event page is included in the calendar event description.</p>
+
 
     <h2>Using Replies/Quote-posts to Add Events</h2>
     <p>Replies/quote-posts let you turn someone else's post into an event. <strong>Replies/quote-posts are only considered if your reply/quote-post contains <code>#socialcal</code></strong>.</p>

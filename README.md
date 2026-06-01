@@ -4,6 +4,8 @@ Passive **Bluesky → ICS** calendar feed generator.
 
 SocialCal extracts structured events from Bluesky posts containing `#socialcal` and exposes them as a standard iCalendar (`.ics`) feed suitable for Google Calendar, Apple Calendar, Outlook, etc.
 
+It can also include public atmo.rsvp events referenced from Bluesky posts with `#socialcal`, without requiring an atmo.rsvp login.
+
 **Live:** https://socialcal.org  
 
 **ICS endpoint:**
@@ -98,6 +100,18 @@ If a reply contains `#socialcal`:
 Thread root determines event sort order.
 
 Duplicate posts in a thread are deduplicated.
+
+---
+
+## atmo.rsvp Events
+
+Public atmo.rsvp event links can be added using the same passive Bluesky workflow:
+
+- Repost a Bluesky post that contains both an atmo.rsvp event link and `#socialcal`.
+- If the linked post does not contain `#socialcal`, reply to it or quote-post it with `#socialcal`.
+- Or post an atmo.rsvp event link yourself with `#socialcal`.
+
+SocialCal reads the public `community.lexicon.calendar.event` record and includes the atmo.rsvp event page in the event description.
 
 ---
 

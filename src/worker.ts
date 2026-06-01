@@ -8,6 +8,7 @@ import { RichText } from "@atproto/api";
 
 
 const BSKY_PUBLIC = "https://public.api.bsky.app/xrpc";
+const ATPROTO_PUBLIC = "https://bsky.social/xrpc";
 const DEFAULT_RELATIVE_TZ = "America/Los_Angeles";
 
 // =====================
@@ -682,6 +683,25 @@ async function bskyGet(path: string, params: Record<string, string | number | un
   return res.json();
 }
 
+async function atprotoGetFrom(base: string, path: string, params: Record<string, string | number | undefined>): Promise<any> {
+  const rpcBase = base.endsWith("/xrpc") ? base : `${base}/xrpc`;
+  const url = new URL(`${rpcBase}/${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined) continue;
+    url.searchParams.set(k, String(v));
+  }
+  const res = await fetch(url.toString(), { headers: { Accept: "application/json" } });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(`ATProto ${path} failed: ${res.status} ${msg}`);
+  }
+  return res.json();
+}
+
+async function atprotoGet(path: string, params: Record<string, string | number | undefined>): Promise<any> {
+  return atprotoGetFrom(ATPROTO_PUBLIC, path, params);
+}
+
 type PostView = {
   uri: string;
   author?: { handle?: string; did?: string };
@@ -778,11 +798,24 @@ type CandidateEvent = | {
   detailsHtml: string;
   referenceISO: string;
   sources: SourcePost[];
+} | {
+  kind: "atmo";
+  sourceUri: string;
+  sourceHandle: string;
+  atmoUri: string;
+  atmoUrl: string;
+  title: string;
+  details: string;
+  detailsHtml: string;
+  when: WhenSpec;
+  sources: SourcePost[];
 };
     
 
 function eventKey(e: CandidateEvent): string {
-  return e.kind === "full" ? `full:${e.sourceUri}` : `combo:${e.sourceUri}->${e.detailsUri}`;
+  if (e.kind === "full") return `full:${e.sourceUri}`;
+  if (e.kind === "combo") return `combo:${e.sourceUri}->${e.detailsUri}`;
+  return `atmo:${e.atmoUri}`;
 }
 
 
@@ -830,6 +863,7 @@ type DerivedEvent = {
 
 
 function candidateUid(e: CandidateEvent): string {
+  if (e.kind === "atmo") return e.atmoUri;
   return e.sourceUri;
 }
 
@@ -871,6 +905,19 @@ function buildEventDescription(details: string, permalink: string, handle: strin
   return [d, footer].filter((x) => x && x.trim().length > 0).join("\n\n");
 }
 
+function buildAtmoDetails(description: string, atmoUrl: string): string {
+  return [description.trim(), `View atmo.rsvp event: ${atmoUrl}`]
+    .filter((x) => x && x.trim().length > 0)
+    .join("\n\n");
+}
+
+function buildAtmoDetailsHtml(description: string, atmoUrl: string): string {
+  const link = `<a href="${escHtml(atmoUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(atmoUrl)}</a>`;
+  return [escHtml(description.trim()), `View atmo.rsvp event: ${link}`]
+    .filter((x) => x && x.trim().length > 0)
+    .join("\n\n");
+}
+
 function sourceFromPost(p: PostView, role: SourcePost["role"]): SourcePost {
   const parts = getPostTextParts(p); // your facet-based render
   return {
@@ -892,6 +939,21 @@ function deriveFromCandidates(handle: string, events: CandidateEvent[], defaultD
 
     const permalink = candidatePermalink(e);
     const uid = candidateUid(e);
+
+    if (e.kind === "atmo") {
+      derived.push({
+        uid,
+        title: e.title,
+        when: e.when,
+        permalink,
+        description: buildEventDescription(e.details, permalink, handle),
+        descriptionHtml: buildEventDescriptionHtml(e.detailsHtml, permalink, handle),
+        errors: [],
+        warnings: [],
+        sources: e.sources,
+      });
+      continue;
+    }
 
     // choose the post URI to attribute the when parse to
     const role: Attribution["role"] = e.kind === "full" ? "full" : "reply-header";
@@ -992,6 +1054,175 @@ function buildEventFromHeaderAndDetails(headerPost: PostView, detailsPost: PostV
   };
 }
 
+type AtmoEventLink = {
+  actor: string;
+  rkey: string;
+  url: string;
+};
+
+type AtmoEventRecord = {
+  name?: string;
+  description?: string;
+  startsAt?: string;
+  endsAt?: string;
+  timezone?: string;
+};
+
+function findAtmoEventLink(text: string): AtmoEventLink | null {
+  const m = text.match(/https?:\/\/(?:www\.)?atmo\.rsvp\/p\/([^/\s?#]+)\/e\/([^/\s?#]+)/i);
+  if (!m) return null;
+  const actor = decodeURIComponent(m[1]);
+  const rkey = decodeURIComponent(m[2]);
+  const url = `https://atmo.rsvp/p/${actor}/e/${rkey}`;
+  return { actor, rkey, url };
+}
+
+const didCache = new Map<string, Promise<string | null>>();
+const pdsCache = new Map<string, Promise<string | null>>();
+
+async function resolveActorDid(actor: string): Promise<string | null> {
+  if (actor.startsWith("did:")) return actor;
+  const key = actor.trim().toLowerCase();
+  if (!key) return null;
+
+  if (!didCache.has(key)) {
+    didCache.set(key, (async () => {
+      try {
+        const data = await atprotoGet("com.atproto.identity.resolveHandle", { handle: key });
+        return typeof data?.did === "string" ? data.did : null;
+      } catch {
+        return null;
+      }
+    })());
+  }
+
+  return didCache.get(key)!;
+}
+
+async function fetchJsonUrl(url: string): Promise<any> {
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => "");
+    throw new Error(`Fetch ${url} failed: ${res.status} ${msg}`);
+  }
+  return res.json();
+}
+
+function didWebUrl(did: string): string | null {
+  const parts = did.split(":");
+  if (parts.length < 3 || parts[0] !== "did" || parts[1] !== "web") return null;
+  const path = parts.slice(2).map(decodeURIComponent);
+  const host = path.shift();
+  if (!host) return null;
+  const suffix = path.length ? `/${path.join("/")}/did.json` : "/.well-known/did.json";
+  return `https://${host}${suffix}`;
+}
+
+function getPdsEndpointFromDidDoc(doc: any): string | null {
+  const services = Array.isArray(doc?.service) ? doc.service : [];
+  const svc = services.find((s: any) => s?.id === "#atproto_pds" || s?.type === "AtprotoPersonalDataServer");
+  const endpoint = svc?.serviceEndpoint;
+  return typeof endpoint === "string" && /^https:\/\//i.test(endpoint) ? endpoint.replace(/\/+$/, "") : null;
+}
+
+async function resolvePdsEndpoint(did: string): Promise<string | null> {
+  if (!pdsCache.has(did)) {
+    pdsCache.set(did, (async () => {
+      try {
+        if (did.startsWith("did:plc:")) {
+          const doc = await fetchJsonUrl(`https://plc.directory/${encodeURIComponent(did)}`);
+          return getPdsEndpointFromDidDoc(doc);
+        }
+
+        if (did.startsWith("did:web:")) {
+          const url = didWebUrl(did);
+          if (!url) return null;
+          const doc = await fetchJsonUrl(url);
+          return getPdsEndpointFromDidDoc(doc);
+        }
+      } catch {
+        return null;
+      }
+
+      return null;
+    })());
+  }
+
+  return pdsCache.get(did)!;
+}
+
+function dateTimeFromAtmo(value: string, timezone?: string): DateTime | null {
+  const withZone = timezone
+    ? DateTime.fromISO(value, { zone: timezone })
+    : DateTime.fromISO(value, { setZone: true });
+  if (withZone.isValid) return withZone;
+
+  const fallback = DateTime.fromISO(value, { zone: "UTC" });
+  return fallback.isValid ? fallback : null;
+}
+
+function whenFromAtmoRecord(record: AtmoEventRecord): WhenSpec | null {
+  if (!record.startsAt) return null;
+
+  const start = dateTimeFromAtmo(record.startsAt, record.timezone);
+  if (!start) return null;
+
+  const parsedEnd = record.endsAt ? dateTimeFromAtmo(record.endsAt, record.timezone) : null;
+  const end = parsedEnd && parsedEnd > start ? parsedEnd : start.plus({ hours: 1 });
+
+  return { kind: "timed", start, end };
+}
+
+async function fetchAtmoEventRecord(link: AtmoEventLink): Promise<{ uri: string; record: AtmoEventRecord } | null> {
+  const did = await resolveActorDid(link.actor);
+  if (!did) return null;
+
+  const uri = `at://${did}/community.lexicon.calendar.event/${link.rkey}`;
+  const pds = await resolvePdsEndpoint(did);
+  const base = pds ?? ATPROTO_PUBLIC;
+
+  try {
+    const data = await atprotoGetFrom(base, "com.atproto.repo.getRecord", {
+      repo: did,
+      collection: "community.lexicon.calendar.event",
+      rkey: link.rkey,
+    });
+    const record = data?.value;
+    if (!record || typeof record !== "object") return null;
+    return { uri, record: record as AtmoEventRecord };
+  } catch {
+    return null;
+  }
+}
+
+async function buildEventFromAtmoLinkPost(p: PostView): Promise<CandidateEvent | null> {
+  const link = findAtmoEventLink(getPostText(p));
+  if (!link) return null;
+
+  const fetched = await fetchAtmoEventRecord(link);
+  if (!fetched) return null;
+
+  const when = whenFromAtmoRecord(fetched.record);
+  if (!when) return null;
+
+  const description = String(fetched.record.description ?? "");
+  const details = buildAtmoDetails(description, link.url);
+  const detailsHtml = buildAtmoDetailsHtml(description, link.url);
+
+  return {
+    kind: "atmo",
+    sourceUri: p.uri,
+    sourceHandle: requireHandle(p),
+    atmoUri: fetched.uri,
+    atmoUrl: link.url,
+    title: String(fetched.record.name ?? "atmo.rsvp event").trim() || "atmo.rsvp event",
+    details,
+    detailsHtml,
+    when,
+    sources: [sourceFromPost(p, "thread")],
+  };
+}
+
 
 
 
@@ -1048,7 +1279,8 @@ async function findTarget(post: PostView): Promise<PostView | null> {
 async function collectCandidateFromPost(
   post: PostView,
   seenEventKeys: Set<string>,
-  maxDepth = 10
+  maxDepth = 10,
+  allowImplicitAtmo = false
 ): Promise<CandidateEvent | null> {
   if (maxDepth < 0) return null;
 
@@ -1080,7 +1312,19 @@ async function collectCandidateFromPost(
     }
   }
 
-  // 3. hashtag-only → recurse
+  // 3. atmo.rsvp event link
+  if (allowImplicitAtmo || hasSocialcal(txt)) {
+    const atmo = await buildEventFromAtmoLinkPost(post);
+    if (atmo) {
+      const k = eventKey(atmo);
+      if (!seenEventKeys.has(k)) {
+        seenEventKeys.add(k);
+        return atmo;
+      }
+    }
+  }
+
+  // 4. hashtag-only → recurse
   if (hasSocialcal(txt)) {
     const target = await findTarget(post);
     if (!target) return null;
@@ -1088,7 +1332,8 @@ async function collectCandidateFromPost(
     const nested = await collectCandidateFromPost(
       target,
       seenEventKeys,
-      maxDepth - 1
+      maxDepth - 1,
+      true
     );
     return nested;
   }
